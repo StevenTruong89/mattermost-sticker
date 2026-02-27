@@ -1,0 +1,41 @@
+{
+    "id": "com.example.sticker",
+    "name": "Custom Sticker",
+    "description": "Custom sticker plugin for Mattermost - share stickers without uploading images every time",
+    "homepage_url": "https://github.com/example/mattermost-plugin-sticker",
+    "support_url": "https://github.com/example/mattermost-plugin-sticker/issues",
+    "version": "1.5.0",
+    "min_server_version": "7.0.0",
+    "server": {
+        "executables": {
+            "linux-amd64": "server/dist/plugin-linux-amd64",
+            "linux-arm64": "server/dist/plugin-linux-arm64",
+            "darwin-amd64": "server/dist/plugin-darwin-amd64",
+            "darwin-arm64": "server/dist/plugin-darwin-arm64",
+            "windows-amd64": "server/dist/plugin-windows-amd64.exe"
+        }
+    },
+    "webapp": {
+        "bundle_path": "webapp/dist/main.js"
+    },
+    "settings_schema": {
+        "header": "Configure the Custom Sticker plugin",
+        "footer": "",
+        "settings": [
+            {
+                "key": "MaxStickerSize",
+                "display_name": "Maximum Sticker Size (KB)",
+                "type": "number",
+                "default": 1024,
+                "help_text": "Maximum file size for sticker images in kilobytes"
+            },
+            {
+                "key": "AllowedFormats",
+                "display_name": "Allowed Image Formats",
+                "type": "text",
+                "default": "png,gif,jpg,jpeg,webp",
+                "help_text": "Comma-separated list of allowed image formats"
+            }
+        ]
+    }
+}
