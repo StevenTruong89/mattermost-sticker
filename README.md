@@ -1,5 +1,5 @@
 # Mattermost Custom Sticker Plugin
-
+fork: https://github.com/jaehyun-ko/mattermost-plugin-sticker
 [![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](https://github.com/StevenTruong89/mattermost-plugin-sticker)
 [![Mattermost](https://img.shields.io/badge/mattermost-%3E%3D7.0.0-red.svg)](https://mattermost.com)
 [![License](https://img.shields.io/badge/license-Apache%202.0-orange.svg)](LICENSE)
