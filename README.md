@@ -6,7 +6,7 @@ fork: https://github.com/jaehyun-ko/mattermost-plugin-sticker
 
 A high-performance custom sticker plugin for Mattermost. Share stickers instantly across your team without the overhead of uploading images for every message. Optimized for large collections with infinite scrolling and backend pagination.
 
-![2026-02-27_13-53-19](https://github.com/user-attachments/assets/982aa80b-4ef9-4806-b27e-a54f61b293ef)
+![2026-02-27_13-58-20](https://github.com/user-attachments/assets/c5fe9975-9bb0-4130-a24c-0daec2e7e7a2)
 
 
 ## 🚀 Key Features
