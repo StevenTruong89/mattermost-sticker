@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -14,10 +15,10 @@ const (
 )
 
 func (p *Plugin) GetAllStickers() (*StickerList, error) {
-	return p.GetStickersPage(1, 0) // 0 means all stickers
+	return p.GetStickersPage(1, 0, "", "", "") // 0 means all stickers, no specific sort or filter
 }
 
-func (p *Plugin) GetStickersPage(page, perPage int) (*StickerList, error) {
+func (p *Plugin) GetStickersPage(page, perPage int, sortBy, sortOrder, creatorID string) (*StickerList, error) {
 	data, appErr := p.API.KVGet(stickersKey)
 	if appErr != nil {
 		return nil, fmt.Errorf("failed to get stickers: %w", appErr)
@@ -32,18 +33,29 @@ func (p *Plugin) GetStickersPage(page, perPage int) (*StickerList, error) {
 		return nil, fmt.Errorf("failed to unmarshal sticker IDs: %w", err)
 	}
 
-	total := len(ids)
-	
+	// Fetch all stickers for filtering and sorting
+	var stickers []*Sticker
+	for _, id := range ids {
+		sticker, err := p.GetSticker(id)
+		if err != nil {
+			continue
+		}
+
+		// Apply creator filter if provided
+		if creatorID != "" && sticker.CreatorID != creatorID {
+			continue
+		}
+
+		stickers = append(stickers, sticker)
+	}
+
+	total := len(stickers)
+
+	// Apply sorting
+	sortStickers(stickers, sortBy, sortOrder)
+
 	// If perPage is 0, return all
 	if perPage <= 0 {
-		stickers := make([]*Sticker, 0, total)
-		for _, id := range ids {
-			sticker, err := p.GetSticker(id)
-			if err != nil {
-				continue
-			}
-			stickers = append(stickers, sticker)
-		}
 		return &StickerList{
 			Stickers: stickers,
 			Total:    total,
@@ -63,20 +75,36 @@ func (p *Plugin) GetStickersPage(page, perPage int) (*StickerList, error) {
 		end = total
 	}
 
-	pageIDs := ids[start:end]
-	stickers := make([]*Sticker, 0, len(pageIDs))
-	for _, id := range pageIDs {
-		sticker, err := p.GetSticker(id)
-		if err != nil {
-			continue
-		}
-		stickers = append(stickers, sticker)
-	}
-
 	return &StickerList{
-		Stickers: stickers,
+		Stickers: stickers[start:end],
 		Total:    total,
 	}, nil
+}
+
+func sortStickers(stickers []*Sticker, sortBy, sortOrder string) {
+	isAsc := sortOrder != "desc"
+
+	sort.Slice(stickers, func(i, j int) bool {
+		var comparison int
+		switch sortBy {
+		case "created_at":
+			diff := stickers[i].CreatedAt - stickers[j].CreatedAt
+			if diff < 0 {
+				comparison = -1
+			} else if diff > 0 {
+				comparison = 1
+			}
+		case "creator_id":
+			comparison = strings.Compare(stickers[i].CreatorID, stickers[j].CreatorID)
+		default: // "name"
+			comparison = strings.Compare(strings.ToLower(stickers[i].Name), strings.ToLower(stickers[j].Name))
+		}
+
+		if !isAsc {
+			return comparison > 0
+		}
+		return comparison < 0
+	})
 }
 
 func (p *Plugin) GetSticker(id string) (*Sticker, error) {

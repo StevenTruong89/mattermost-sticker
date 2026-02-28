@@ -123,8 +123,8 @@ export const doDelete = async (url: string): Promise<void> => {
     }
 };
 
-export const getStickers = async (page = 1, perPage = 50): Promise<StickerList> => {
-    return doGet(`${getPluginServerRoute()}/api/v1/stickers?page=${page}&per_page=${perPage}`);
+export const getStickers = async (page = 1, perPage = 50, sortBy = '', sortOrder = '', creatorId = ''): Promise<StickerList> => {
+    return doGet(`${getPluginServerRoute()}/api/v1/stickers?page=${page}&per_page=${perPage}&sort_by=${sortBy}&sort_order=${sortOrder}&creator_id=${creatorId}`);
 };
 
 export const searchStickers = async (query: string): Promise<StickerList> => {

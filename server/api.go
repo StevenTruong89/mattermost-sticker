@@ -43,7 +43,11 @@ func (p *Plugin) handleGetStickers(w http.ResponseWriter, r *http.Request) {
 		perPage = 50 // Default to 50
 	}
 
-	list, err := p.GetStickersPage(page, perPage)
+	sortBy := r.URL.Query().Get("sort_by")
+	sortOrder := r.URL.Query().Get("sort_order")
+	creatorID := r.URL.Query().Get("creator_id")
+
+	list, err := p.GetStickersPage(page, perPage, sortBy, sortOrder, creatorID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

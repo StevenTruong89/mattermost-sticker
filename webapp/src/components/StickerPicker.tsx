@@ -47,6 +47,72 @@ interface StickerPickerProps {
     currentUserId: string;
 }
 
+// Memoized sticker item component moved outside to prevent re-mounting
+const StickerItem = React.memo<{
+    sticker: Sticker;
+    index: number;
+    isMultiSelectMode: boolean;
+    isSelected: boolean;
+    onSelect: (sticker: Sticker) => void;
+    onToggle: (id: string) => void;
+    onDelete: (sticker: Sticker) => void;
+    currentUserId: string;
+    styles: any;
+    getStickerImageUrl: (id: string) => string;
+}>(({ sticker, isMultiSelectMode, isSelected, onSelect, onToggle, onDelete, currentUserId, styles, getStickerImageUrl }) => (
+    <div
+        className="sticker-item"
+        style={{
+            ...styles.stickerItem,
+            ...(isMultiSelectMode && isSelected ? styles.stickerItemSelected : {}),
+        }}
+        onClick={() => {
+            if (isMultiSelectMode) {
+                onToggle(sticker.id);
+            } else {
+                onSelect(sticker);
+            }
+        }}
+        title={sticker.name}
+    >
+        {isMultiSelectMode && (
+            <div style={styles.selectionCheckbox}>
+                <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => onToggle(sticker.id)}
+                    style={styles.checkbox}
+                />
+            </div>
+        )}
+        <div style={styles.stickerImageContainer}>
+            <img
+                src={getStickerImageUrl(sticker.id)}
+                alt={sticker.name}
+                style={styles.stickerImage}
+                loading="lazy"
+                decoding="async"
+            />
+        </div>
+        {!isMultiSelectMode && sticker.creator_id === currentUserId && (
+            <button
+                style={styles.deleteButton}
+                onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete(sticker);
+                }}
+                title="Delete"
+            >
+                &times;
+            </button>
+        )}
+    </div>
+), (prev, next) =>
+    prev.sticker.id === next.sticker.id &&
+    prev.isSelected === next.isSelected &&
+    prev.isMultiSelectMode === next.isMultiSelectMode
+);
+
 const StickerPicker: React.FC<StickerPickerProps> = ({
     channelId,
     onSelect,
@@ -79,17 +145,22 @@ const StickerPicker: React.FC<StickerPickerProps> = ({
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(true);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
-    const PER_PAGE = 30;
+    const PER_PAGE = 50;
 
     // Intersection Observer for Infinite Scroll
     const observer = useRef<IntersectionObserver | null>(null);
+    const loadMoreTimeout = useRef<NodeJS.Timeout | null>(null);
+
     const lastStickerElementRef = useCallback((node: HTMLDivElement | null) => {
         if (loading || isLoadingMore) return;
         if (observer.current) observer.current.disconnect();
+
         observer.current = new IntersectionObserver(entries => {
             if (entries[0].isIntersecting && hasMore) {
                 setPage(prevPage => prevPage + 1);
             }
+        }, {
+            rootMargin: '300px', // Pre-fetch stickers before reaching bottom
         });
         if (node) observer.current.observe(node);
     }, [loading, isLoadingMore, hasMore]);
@@ -123,26 +194,33 @@ const StickerPicker: React.FC<StickerPickerProps> = ({
             } else if (filterBy === 'recent' && recentIds.length > 0) {
                 // Fetch recent stickers specifically by their IDs
                 result = await getStickersByIds(recentIds);
+            } else if (filterBy === 'mine') {
+                // Pass currentUserId to fetch all user-owned stickers via backend
+                result = await getStickers(currentPage, PER_PAGE, sortBy, sortOrder, currentUserId);
             } else {
-                result = await getStickers(currentPage, PER_PAGE);
+                // Pass sorting to backend
+                result = await getStickers(currentPage, PER_PAGE, sortBy, sortOrder);
             }
 
             let fetchedStickers = result.stickers;
             const totalCount = result.total;
 
+            let newStickers: Sticker[];
             if (isLoadMore) {
-                setStickers(prev => [...prev, ...fetchedStickers]);
+                newStickers = [...stickers, ...fetchedStickers];
+                setStickers(newStickers);
             } else {
-                setStickers(fetchedStickers);
+                newStickers = fetchedStickers;
+                setStickers(newStickers);
             }
 
             // Update hasMore
-            if (debouncedSearchQuery || filterBy === 'recent' || filterBy === 'mine') {
-                // We show all results at once for search and filtered views 
-                // because the backend currently only supports pagination for 'all' stickers.
+            if (debouncedSearchQuery || filterBy === 'recent') {
+                // We show all results at once for search and recent 
                 setHasMore(false);
             } else {
-                setHasMore(stickers.length + fetchedStickers.length < totalCount);
+                // 'all' and 'mine' now both support backend pagination
+                setHasMore(newStickers.length < totalCount && fetchedStickers.length > 0);
             }
 
         } catch (err) {
@@ -206,6 +284,11 @@ const StickerPicker: React.FC<StickerPickerProps> = ({
 
         // Apply sorting (if not already sorted by backend properly for the specific filter)
         return [...filtered].sort((a, b) => {
+            // SKIP sorting if we are in 'all' or 'mine' mode (already sorted by backend)
+            if ((filterBy === 'all' || filterBy === 'mine') && !debouncedSearchQuery) {
+                return 0; // Maintain backend order
+            }
+
             let comparison = 0;
             if (sortBy === 'name') {
                 comparison = a.name.localeCompare(b.name);
@@ -359,67 +442,6 @@ const StickerPicker: React.FC<StickerPickerProps> = ({
         setSelectedStickers(newSelected);
     };
 
-    // Memoized sticker item component for performance
-    const StickerItem = React.memo<{
-        sticker: Sticker;
-        index: number;
-        isMultiSelectMode: boolean;
-        isSelected: boolean;
-        onSelect: (sticker: Sticker) => void;
-        onToggle: (id: string) => void;
-        onDelete: (sticker: Sticker) => void;
-        currentUserId: string;
-    }>(({ sticker, isMultiSelectMode, isSelected, onSelect, onToggle, onDelete, currentUserId }) => (
-        <div
-            className="sticker-item"
-            style={{
-                ...styles.stickerItem,
-                ...(isMultiSelectMode && isSelected ? styles.stickerItemSelected : {}),
-            }}
-            onClick={() => {
-                if (isMultiSelectMode) {
-                    onToggle(sticker.id);
-                } else {
-                    onSelect(sticker);
-                }
-            }}
-            title={sticker.name}
-        >
-            {isMultiSelectMode && (
-                <div style={styles.selectionCheckbox}>
-                    <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => onToggle(sticker.id)}
-                        style={styles.checkbox}
-                    />
-                </div>
-            )}
-            <div style={styles.stickerImageContainer}>
-                <img
-                    src={getStickerImageUrl(sticker.id)}
-                    alt={sticker.name}
-                    style={styles.stickerImage}
-                />
-            </div>
-            {!isMultiSelectMode && sticker.creator_id === currentUserId && (
-                <button
-                    style={styles.deleteButton}
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        onDelete(sticker);
-                    }}
-                    title="Delete"
-                >
-                    &times;
-                </button>
-            )}
-        </div>
-    ), (prev, next) =>
-        prev.sticker.id === next.sticker.id &&
-        prev.isSelected === next.isSelected &&
-        prev.isMultiSelectMode === next.isMultiSelectMode
-    );
 
     return (
         <>
@@ -699,35 +721,28 @@ const StickerPicker: React.FC<StickerPickerProps> = ({
                         ) : (
                             <>
                                 {displayStickers.map((sticker, index) => {
+                                    const itemProps = {
+                                        key: sticker.id,
+                                        sticker,
+                                        index,
+                                        isMultiSelectMode,
+                                        isSelected: selectedStickers.has(sticker.id),
+                                        onSelect,
+                                        onToggle: toggleStickerSelection,
+                                        onDelete: handleDelete,
+                                        currentUserId,
+                                        styles,
+                                        getStickerImageUrl,
+                                    };
+
                                     if (displayStickers.length === index + 1) {
                                         return (
                                             <div ref={lastStickerElementRef} key={sticker.id}>
-                                                <StickerItem
-                                                    sticker={sticker}
-                                                    index={index}
-                                                    isMultiSelectMode={isMultiSelectMode}
-                                                    isSelected={selectedStickers.has(sticker.id)}
-                                                    onSelect={onSelect}
-                                                    onToggle={toggleStickerSelection}
-                                                    onDelete={handleDelete}
-                                                    currentUserId={currentUserId}
-                                                />
+                                                <StickerItem {...itemProps} />
                                             </div>
                                         );
                                     }
-                                    return (
-                                        <StickerItem
-                                            key={sticker.id}
-                                            sticker={sticker}
-                                            index={index}
-                                            isMultiSelectMode={isMultiSelectMode}
-                                            isSelected={selectedStickers.has(sticker.id)}
-                                            onSelect={onSelect}
-                                            onToggle={toggleStickerSelection}
-                                            onDelete={handleDelete}
-                                            currentUserId={currentUserId}
-                                        />
-                                    );
+                                    return <StickerItem {...itemProps} />;
                                 })}
                                 {isLoadingMore && <div style={styles.loading}>Loading more...</div>}
                             </>
@@ -1042,6 +1057,7 @@ const styles: { [key: string]: React.CSSProperties } = {
         border: '1px solid transparent',
         // Performance optimization: limit repaints
         willChange: 'transform, box-shadow',
+        contain: 'content',
     },
     stickerImageContainer: {
         position: 'relative',
