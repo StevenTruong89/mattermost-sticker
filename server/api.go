@@ -20,6 +20,7 @@ func (p *Plugin) initAPI() {
 	p.router.HandleFunc("/api/v1/stickers/{id}", p.handleDeleteSticker).Methods(http.MethodDelete)
 	p.router.HandleFunc("/api/v1/stickers/{id}/image", p.handleGetStickerImage).Methods(http.MethodGet)
 	p.router.HandleFunc("/api/v1/stickers/search", p.handleSearchStickers).Methods(http.MethodGet)
+	p.router.HandleFunc("/api/v1/stickers/by-ids", p.handleGetStickersByIds).Methods(http.MethodGet)
 }
 
 func (p *Plugin) handleGetStickers(w http.ResponseWriter, r *http.Request) {
@@ -576,4 +577,32 @@ func (p *Plugin) handleBulkDeleteStickers(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusOK)
 	}
 	json.NewEncoder(w).Encode(result)
+}
+
+func (p *Plugin) handleGetStickersByIds(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("Mattermost-User-Id")
+	if userID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	idsStr := r.URL.Query().Get("ids")
+	if idsStr == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(&StickerList{Stickers: []*Sticker{}, Total: 0})
+		return
+	}
+
+	ids := strings.Split(idsStr, ",")
+	stickers, err := p.GetStickersByIds(ids)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(&StickerList{
+		Stickers: stickers,
+		Total:    len(stickers),
+	})
 }

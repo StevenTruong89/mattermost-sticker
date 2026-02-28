@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Sticker } from '../types';
-import { getStickers, searchStickers, uploadSticker, uploadStickerFromURL, deleteSticker, getStickerImageUrl, bulkUploadStickers, BulkUploadResult, bulkDeleteStickers, BulkDeleteResult, getRecentStickers } from '../actions/api';
+import { getStickers, searchStickers, uploadSticker, uploadStickerFromURL, deleteSticker, getStickerImageUrl, bulkUploadStickers, BulkUploadResult, bulkDeleteStickers, BulkDeleteResult, getRecentStickers, getStickersByIds } from '../actions/api';
 
 // Virtualization hook for performance
 const useVirtualization = (items: Sticker[], itemHeight: number, containerHeight: number, overscan = 5) => {
@@ -112,18 +112,22 @@ const StickerPicker: React.FC<StickerPickerProps> = ({
             setError(null);
 
             const currentPage = isLoadMore ? page : 1;
-            const result = debouncedSearchQuery
-                ? await searchStickers(debouncedSearchQuery + (refreshTrigger ? `&t=${Date.now()}` : '')) // Search still returns all for now
-                : await getStickers(currentPage, PER_PAGE);
 
             // Get recent sticker IDs from localStorage
             const recentIds = getRecentStickers();
             setRecentStickerIds(recentIds);
 
-            let fetchedStickers = result.stickers;
+            let result;
+            if (debouncedSearchQuery) {
+                result = await searchStickers(debouncedSearchQuery + (refreshTrigger ? `&t=${Date.now()}` : ''));
+            } else if (filterBy === 'recent' && recentIds.length > 0) {
+                // Fetch recent stickers specifically by their IDs
+                result = await getStickersByIds(recentIds);
+            } else {
+                result = await getStickers(currentPage, PER_PAGE);
+            }
 
-            // If it's a search, backend doesn't paginate yet, so we handle total differently
-            // but for getStickers, it's already paginated.
+            let fetchedStickers = result.stickers;
             const totalCount = result.total;
 
             if (isLoadMore) {
@@ -133,8 +137,9 @@ const StickerPicker: React.FC<StickerPickerProps> = ({
             }
 
             // Update hasMore
-            if (debouncedSearchQuery) {
-                // For search, we show all returned results at once (current backend behavior)
+            if (debouncedSearchQuery || filterBy === 'recent' || filterBy === 'mine') {
+                // We show all results at once for search and filtered views 
+                // because the backend currently only supports pagination for 'all' stickers.
                 setHasMore(false);
             } else {
                 setHasMore(stickers.length + fetchedStickers.length < totalCount);
@@ -176,6 +181,57 @@ const StickerPicker: React.FC<StickerPickerProps> = ({
         setAutoFilterAttempted(false);
     }, [filterBy]);
 
+
+    // Memoized filtered stickers for rendering
+    const displayStickers = useMemo(() => {
+        let filtered = stickers;
+
+        // Apply filters
+        if (filterBy === 'recent') {
+            // Re-order stickers to match recentStickerIds (which should be fully loaded now)
+            filtered = recentStickerIds
+                .map(id => stickers.find(s => s.id === id))
+                .filter((s): s is Sticker => s !== undefined);
+        } else if (filterBy === 'mine') {
+            filtered = stickers.filter(s => s.creator_id === currentUserId);
+        }
+
+        // Apply search query if not already handled by backend
+        if (debouncedSearchQuery) {
+            const query = debouncedSearchQuery.toLowerCase();
+            filtered = filtered.filter(s =>
+                s.name.toLowerCase().includes(query)
+            );
+        }
+
+        // Apply sorting (if not already sorted by backend properly for the specific filter)
+        return [...filtered].sort((a, b) => {
+            let comparison = 0;
+            if (sortBy === 'name') {
+                comparison = a.name.localeCompare(b.name);
+            } else if (sortBy === 'created_at') {
+                comparison = (a.created_at || 0) - (b.created_at || 0);
+            } else if (sortBy === 'creator_id') {
+                comparison = a.creator_id.localeCompare(b.creator_id);
+            }
+            return sortOrder === 'asc' ? comparison : -comparison;
+        });
+    }, [stickers, filterBy, recentStickerIds, currentUserId, debouncedSearchQuery, sortBy, sortOrder]);
+
+    // Handle auto-filter fallback if no stickers are found in the priority categories
+    useEffect(() => {
+        if (!loading && !isLoadingMore && !autoFilterAttempted && stickers.length > 0) {
+            if (filterBy === 'recent' && displayStickers.length === 0) {
+                console.log('[Sticker] No recent stickers, falling back to Mine');
+                setFilterBy('mine');
+                setAutoFilterAttempted(true);
+            } else if (filterBy === 'mine' && displayStickers.length === 0) {
+                console.log('[Sticker] No "mine" stickers, falling back to All');
+                setFilterBy('all');
+                setAutoFilterAttempted(true);
+            }
+        }
+    }, [displayStickers.length, filterBy, loading, isLoadingMore, autoFilterAttempted, stickers.length]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -642,8 +698,8 @@ const StickerPicker: React.FC<StickerPickerProps> = ({
                             </div>
                         ) : (
                             <>
-                                {stickers.map((sticker, index) => {
-                                    if (stickers.length === index + 1) {
+                                {displayStickers.map((sticker, index) => {
+                                    if (displayStickers.length === index + 1) {
                                         return (
                                             <div ref={lastStickerElementRef} key={sticker.id}>
                                                 <StickerItem

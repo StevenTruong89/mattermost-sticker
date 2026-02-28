@@ -285,3 +285,17 @@ func (p *Plugin) DeleteStickerImage(stickerID string) error {
 	}
 	return nil
 }
+
+func (p *Plugin) GetStickersByIds(ids []string) ([]*Sticker, error) {
+	stickers := make([]*Sticker, 0, len(ids))
+	for _, id := range ids {
+		sticker, err := p.GetSticker(id)
+		if err != nil {
+			// Skip stickers that are not found or have errors
+			continue
+		}
+		stickers = append(stickers, sticker)
+	}
+
+	return stickers, nil
+}

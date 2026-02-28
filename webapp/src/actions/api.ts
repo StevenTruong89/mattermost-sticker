@@ -131,6 +131,13 @@ export const searchStickers = async (query: string): Promise<StickerList> => {
     return doGet(`${getPluginServerRoute()}/api/v1/stickers/search?q=${encodeURIComponent(query)}`);
 };
 
+export const getStickersByIds = async (ids: string[]): Promise<StickerList> => {
+    if (!ids || ids.length === 0) {
+        return { stickers: [], total: 0 };
+    }
+    return doGet(`${getPluginServerRoute()}/api/v1/stickers/by-ids?ids=${ids.join(',')}`);
+};
+
 export const uploadSticker = async (
     name: string,
     file: File,
@@ -214,7 +221,7 @@ export const getFileUrl = (fileId: string): string => {
 
 // Recent stickers functionality
 const RECENT_STICKERS_KEY = 'recent_stickers';
-const MAX_RECENT_STICKERS = 10;
+const MAX_RECENT_STICKERS = 100;
 
 export const getRecentStickers = (): string[] => {
     try {
