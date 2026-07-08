@@ -508,6 +508,8 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
                     transition-duration: 0.1s !important;
                 }
                 .sp-tab:hover { background: var(--center-channel-color-08, #f0f0f0) !important; }
+                .sp-search:focus { border-color: var(--button-bg, #166de0) !important; box-shadow: 0 0 0 2px rgba(22,109,224,0.15) !important; }
+                .sp-clear:hover { background: var(--center-channel-color-24, #ccc) !important; }
                 @media (max-width: 900px) {
                     .sp-preview-panel { display: none !important; }
                 }
@@ -521,21 +523,24 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
                     <div style={S.sidebar}>
                         {/* Search */}
                         <div style={S.sidebarSearch}>
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ position: 'absolute', left: 8, color: 'var(--center-channel-color-56, #aaa)', pointerEvents: 'none' }}>
-                                <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" fill="currentColor" />
-                            </svg>
-                            <input
-                                type="search"
-                                placeholder="Search..."
-                                value={searchQuery}
-                                onChange={(e) => setSearchQuery(e.target.value)}
-                                style={S.sidebarSearchInput}
-                            />
-                            {searchQuery && (
-                                <button style={S.sidebarSearchClear} onClick={() => setSearchQuery('')}>
-                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="currentColor" /></svg>
-                                </button>
-                            )}
+                            <div style={S.searchWrapper}>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={S.searchIcon}>
+                                    <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" fill="currentColor" />
+                                </svg>
+                                <input
+                                    type="search"
+                                    className="sp-search"
+                                    placeholder="Search stickers..."
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    style={S.searchInput}
+                                />
+                                {searchQuery && (
+                                    <button className="sp-clear" style={S.searchClear} onClick={() => setSearchQuery('')}>
+                                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="currentColor" /></svg>
+                                    </button>
+                                )}
+                            </div>
                         </div>
 
                         {/* Tabs */}
@@ -545,11 +550,10 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
                                     key={tab.key}
                                     className="sp-tab"
                                     style={activeTab === tab.key ? S.tabActive : S.tab}
-                                    onClick={() => { setActiveTab(tab.key); setSearchQuery(''); setFocusedIndex(-1); setShowUpload(false); }}
+                                    onClick={() => { setActiveTab(tab.key); setSearchQuery(''); setFocusedIndex(-1); setShowUpload(false); setShowBulkUpload(false); }}
                                 >
                                     <span style={S.tabIcon}>{tab.icon}</span>
                                     <span style={S.tabLabel}>{tab.label}</span>
-                                    <span style={S.tabCount}>{tab.count}</span>
                                 </button>
                             ))}
                         </div>
@@ -737,33 +741,46 @@ const S: Record<string, React.CSSProperties> = {
     },
 
     sidebarSearch: {
-        position: 'relative',
         padding: '12px 10px 8px',
     },
-    sidebarSearchInput: {
+    searchWrapper: {
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+    },
+    searchIcon: {
+        position: 'absolute',
+        left: 10,
+        color: 'var(--center-channel-color-56, #aaa)',
+        pointerEvents: 'none',
+    },
+    searchInput: {
         width: '100%',
-        padding: '7px 24px 7px 28px',
-        borderRadius: 6,
+        padding: '9px 30px 9px 32px',
+        borderRadius: 8,
         border: '1px solid var(--center-channel-color-16, #e0e0e0)',
-        fontSize: 12,
+        fontSize: 13,
         backgroundColor: 'var(--center-channel-bg, #fff)',
         color: 'var(--center-channel-color)',
         outline: 'none',
         boxSizing: 'border-box',
+        transition: 'border-color 0.15s, box-shadow 0.15s',
     },
-    sidebarSearchClear: {
+    searchClear: {
         position: 'absolute',
-        right: 14,
-        top: '50%',
-        transform: 'translateY(-50%)',
-        width: 16, height: 16,
+        right: 8,
+        width: 18,
+        height: 18,
         borderRadius: '50%',
         border: 'none',
         background: 'var(--center-channel-color-16, #ddd)',
         color: 'var(--center-channel-color-56, #888)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
         cursor: 'pointer',
         padding: 0,
+        transition: 'background 0.15s',
     },
 
     sidebarTabs: {
@@ -807,11 +824,6 @@ const S: Record<string, React.CSSProperties> = {
     },
     tabIcon: { display: 'flex', alignItems: 'center', flexShrink: 0 },
     tabLabel: { flex: 1 },
-    tabCount: {
-        fontSize: 10,
-        fontWeight: 600,
-        opacity: 0.7,
-    },
 
     // Sidebar bottom
     sidebarBottom: {
