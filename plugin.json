@@ -4,7 +4,7 @@
     "description": "Custom sticker plugin for Mattermost - share stickers without uploading images every time",
     "homepage_url": "https://github.com/example/mattermost-plugin-sticker",
     "support_url": "https://github.com/example/mattermost-plugin-sticker/issues",
-    "version": "1.5.7",
+    "version": "1.6.0",
     "min_server_version": "7.0.0",
     "server": {
         "executables": {

@@ -1,44 +1,259 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import {
+    getStickers,
+    searchStickers,
+    uploadSticker,
+    deleteSticker,
+    getStickerImageUrl,
+    bulkUploadStickers,
+    BulkUploadResult,
+    bulkDeleteStickers,
+    getRecentStickers,
+    getStickersByIds,
+} from '../actions/api';
 import { Sticker } from '../types';
-import { getStickers, searchStickers, uploadSticker, uploadStickerFromURL, deleteSticker, getStickerImageUrl, bulkUploadStickers, BulkUploadResult, bulkDeleteStickers, BulkDeleteResult, getRecentStickers, getStickersByIds } from '../actions/api';
 
-// Virtualization hook for performance
-const useVirtualization = (items: Sticker[], itemHeight: number, containerHeight: number, overscan = 5) => {
-    const [scrollTop, setScrollTop] = useState(0);
+// ─── Hooks ──────────────────────────────────────────────────────────────────
 
-    const virtualItems = useMemo(() => {
-        const totalHeight = items.length * itemHeight;
-        const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
-        const visibleCount = Math.ceil(containerHeight / itemHeight);
-        const endIndex = Math.min(items.length, startIndex + visibleCount + overscan * 2);
-
-        return {
-            virtualItems: items.slice(startIndex, endIndex),
-            startIndex,
-            totalHeight,
-            offsetY: startIndex * itemHeight,
-        };
-    }, [items, itemHeight, scrollTop, containerHeight, overscan]);
-
-    return { ...virtualItems, setScrollTop };
-};
-
-// Debounce hook for search
 const useDebounce = <T,>(value: T, delay: number): T => {
     const [debouncedValue, setDebouncedValue] = useState<T>(value);
-
     useEffect(() => {
-        const handler = setTimeout(() => {
-            setDebouncedValue(value);
-        }, delay);
-
-        return () => {
-            clearTimeout(handler);
-        };
+        const timer = setTimeout(() => setDebouncedValue(value), delay);
+        return () => clearTimeout(timer);
     }, [value, delay]);
-
     return debouncedValue;
 };
+
+// ─── Confirm Dialog ─────────────────────────────────────────────────────────
+
+interface ConfirmDialogProps {
+    title: string;
+    message: string;
+    danger?: boolean;
+    onConfirm: () => void;
+    onCancel: () => void;
+}
+
+const ConfirmDialog: React.FC<ConfirmDialogProps> = ({ title, message, danger, onConfirm, onCancel }) => (
+    <div style={S.overlay} onClick={onCancel}>
+        <div style={S.dialog} onClick={(e) => e.stopPropagation()}>
+            <h3 style={S.dialogTitle}>{title}</h3>
+            <p style={S.dialogMsg}>{message}</p>
+            <div style={S.dialogActions}>
+                <button style={S.btnGhost} onClick={onCancel}>Cancel</button>
+                <button style={danger ? S.btnDanger : S.btnPrimary} onClick={onConfirm}>Delete</button>
+            </div>
+        </div>
+    </div>
+);
+
+// ─── Sent Toast ─────────────────────────────────────────────────────────────
+
+const SentToast: React.FC<{ name: string; onDone: () => void }> = ({ name, onDone }) => {
+    useEffect(() => {
+        const t = setTimeout(onDone, 1500);
+        return () => clearTimeout(t);
+    }, [onDone]);
+
+    return (
+        <div style={S.toast}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ marginRight: 6 }}>
+                <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="currentColor" />
+            </svg>
+            "{name}" sent!
+        </div>
+    );
+};
+
+// ─── Upload Panel (inline in sidebar) ───────────────────────────────────────
+
+interface UploadPanelProps {
+    channelId: string;
+    onDone: () => void;
+}
+
+const UploadPanel: React.FC<UploadPanelProps> = ({ channelId, onDone }) => {
+    const [name, setName] = useState('');
+    const [file, setFile] = useState<File | null>(null);
+    const [uploading, setUploading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    const handleUpload = async () => {
+        if (!name.trim() || !file) return;
+        if (name.trim().length > 10) { setError('Max 10 characters'); return; }
+        try {
+            setUploading(true);
+            setError(null);
+            await uploadSticker(name.trim(), file, channelId);
+            setName('');
+            setFile(null);
+            onDone();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed');
+        } finally {
+            setUploading(false);
+        }
+    };
+
+    return (
+        <div style={S.uploadPanel}>
+            <input
+                type="text"
+                placeholder="Name (max 10)"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                style={S.uploadInput}
+                maxLength={10}
+                autoFocus
+            />
+            <div
+                style={S.uploadDrop}
+                onClick={() => inputRef.current?.click()}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); }}
+            >
+                <input ref={inputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
+                {file ? (
+                    <span style={{ fontSize: 12, color: 'var(--center-channel-color)' }}>{file.name}</span>
+                ) : (
+                    <span style={{ fontSize: 12, color: 'var(--center-channel-color-56, #888)' }}>Drop or click</span>
+                )}
+            </div>
+            {error && <div style={S.uploadError}>{error}</div>}
+            <button
+                style={!name.trim() || !file || uploading ? S.btnUploadDisabled : S.btnUpload}
+                onClick={handleUpload}
+                disabled={!name.trim() || !file || uploading}
+            >
+                {uploading ? '...' : 'Upload'}
+            </button>
+        </div>
+    );
+};
+
+// ─── Bulk Upload Panel ──────────────────────────────────────────────────────
+
+interface BulkUploadPanelProps {
+    channelId: string;
+    onDone: () => void;
+}
+
+const BulkUploadPanel: React.FC<BulkUploadPanelProps> = ({ channelId, onDone }) => {
+    const [files, setFiles] = useState<FileList | null>(null);
+    const [uploading, setUploading] = useState(false);
+    const [result, setResult] = useState<BulkUploadResult | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    const handleBulkUpload = async () => {
+        if (!files || files.length === 0) return;
+        try {
+            setUploading(true);
+            setError(null);
+            const res = await bulkUploadStickers(files, channelId);
+            setResult(res);
+            setFiles(null);
+            if (res.success.length > 0) {
+                onDone();
+            }
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed');
+        } finally {
+            setUploading(false);
+        }
+    };
+
+    return (
+        <div style={S.uploadPanel}>
+            <div style={S.bulkInfo}>
+                Files will use filename (without extension) as sticker name
+            </div>
+            <div
+                style={S.uploadDrop}
+                onClick={() => inputRef.current?.click()}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files.length > 0) setFiles(e.dataTransfer.files); }}
+            >
+                <input ref={inputRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => setFiles(e.target.files)} />
+                {files ? (
+                    <span style={{ fontSize: 12, color: 'var(--center-channel-color)' }}>{files.length} file(s) selected</span>
+                ) : (
+                    <span style={{ fontSize: 12, color: 'var(--center-channel-color-56, #888)' }}>Drop or click to select multiple</span>
+                )}
+            </div>
+            {error && <div style={S.uploadError}>{error}</div>}
+            {result && (
+                <div style={S.bulkResult}>
+                    <div style={{ color: 'var(--online-indicator, #3db887)' }}>{result.success.length} uploaded</div>
+                    {Object.keys(result.failed).length > 0 && (
+                        <div style={{ color: 'var(--error-text-color, #d24b4e)' }}>{Object.keys(result.failed).length} failed</div>
+                    )}
+                </div>
+            )}
+            <button
+                style={!files || files.length === 0 || uploading ? S.btnUploadDisabled : S.btnUpload}
+                onClick={handleBulkUpload}
+                disabled={!files || files.length === 0 || uploading}
+            >
+                {uploading ? 'Uploading...' : `Upload ${files ? files.length : ''} sticker(s)`}
+            </button>
+        </div>
+    );
+};
+
+// ─── Sticker Item ───────────────────────────────────────────────────────────
+
+interface StickerItemProps {
+    sticker: Sticker;
+    isOwner: boolean;
+    isSelected: boolean;
+    isMultiSelect: boolean;
+    isFocused: boolean;
+    onSelect: (s: Sticker) => void;
+    onDelete: (s: Sticker) => void;
+    onToggleMulti: (id: string) => void;
+    onHover: (s: Sticker | null) => void;
+}
+
+const StickerItem = React.memo<StickerItemProps>(
+    ({ sticker, isOwner, isSelected, isMultiSelect, isFocused, onSelect, onDelete, onToggleMulti, onHover }) => (
+        <div
+            className="sp-item"
+            style={{
+                ...S.item,
+                ...(isFocused ? S.itemFocused : {}),
+                ...(isSelected ? S.itemSelected : {}),
+            }}
+            onClick={() => isMultiSelect ? onToggleMulti(sticker.id) : onSelect(sticker)}
+            onMouseEnter={() => onHover(sticker)}
+            onMouseLeave={() => onHover(null)}
+            data-sticker-id={sticker.id}
+        >
+            {isMultiSelect && (
+                <div style={S.itemCheckbox}>
+                    <input type="checkbox" checked={isSelected} onChange={() => onToggleMulti(sticker.id)} style={{ accentColor: 'var(--button-bg, #166de0)' }} />
+                </div>
+            )}
+            <img
+                className="sp-item-img"
+                src={getStickerImageUrl(sticker.id)}
+                alt={sticker.name}
+                loading="lazy"
+                decoding="async"
+                style={S.itemImage}
+            />
+            {isOwner && !isMultiSelect && (
+                <span style={S.itemOwnerIcon} title="Your sticker">
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" fill="currentColor" /></svg>
+                </span>
+            )}
+        </div>
+    ),
+    (p, n) => p.sticker.id === n.sticker.id && p.isSelected === n.isSelected && p.isFocused === n.isFocused && p.isMultiSelect === n.isMultiSelect
+);
+
+// ─── Main Component ─────────────────────────────────────────────────────────
 
 interface StickerPickerProps {
     channelId: string;
@@ -47,1142 +262,863 @@ interface StickerPickerProps {
     currentUserId: string;
 }
 
-// Memoized sticker item component moved outside to prevent re-mounting
-const StickerItem = React.memo<{
-    sticker: Sticker;
-    index: number;
-    isMultiSelectMode: boolean;
-    isSelected: boolean;
-    onSelect: (sticker: Sticker) => void;
-    onToggle: (id: string) => void;
-    onDelete: (sticker: Sticker) => void;
-    currentUserId: string;
-    styles: any;
-    getStickerImageUrl: (id: string) => string;
-}>(({ sticker, isMultiSelectMode, isSelected, onSelect, onToggle, onDelete, currentUserId, styles, getStickerImageUrl }) => (
-    <div
-        className="sticker-item"
-        style={{
-            ...styles.stickerItem,
-            ...(isMultiSelectMode && isSelected ? styles.stickerItemSelected : {}),
-        }}
-        onClick={() => {
-            if (isMultiSelectMode) {
-                onToggle(sticker.id);
-            } else {
-                onSelect(sticker);
-            }
-        }}
-        title={sticker.name}
-    >
-        {isMultiSelectMode && (
-            <div style={styles.selectionCheckbox}>
-                <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => onToggle(sticker.id)}
-                    style={styles.checkbox}
-                />
-            </div>
-        )}
-        <div style={styles.stickerImageContainer}>
-            <img
-                src={getStickerImageUrl(sticker.id)}
-                alt={sticker.name}
-                style={styles.stickerImage}
-                loading="lazy"
-                decoding="async"
-            />
-        </div>
-        {!isMultiSelectMode && sticker.creator_id === currentUserId && (
-            <button
-                style={styles.deleteButton}
-                onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete(sticker);
-                }}
-                title="Delete"
-            >
-                &times;
-            </button>
-        )}
-    </div>
-), (prev, next) =>
-    prev.sticker.id === next.sticker.id &&
-    prev.isSelected === next.isSelected &&
-    prev.isMultiSelectMode === next.isMultiSelectMode
-);
+type TabKey = 'recent' | 'mine' | 'all';
 
-const StickerPicker: React.FC<StickerPickerProps> = ({
-    channelId,
-    onSelect,
-    onClose,
-    currentUserId,
-}) => {
+const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onClose, currentUserId }) => {
+    // ── State ──────────────────────────────────────────────────────────────
     const [stickers, setStickers] = useState<Sticker[]>([]);
-    const [searchQuery, setSearchQuery] = useState('');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [showUpload, setShowUpload] = useState(false);
-    const [uploadMode, setUploadMode] = useState<'file' | 'bulk'>('file');
-    const [uploadName, setUploadName] = useState('');
-    const [uploadFile, setUploadFile] = useState<File | null>(null);
+    const [searchQuery, setSearchQuery] = useState('');
+    const debouncedSearch = useDebounce(searchQuery, 250);
 
-    const [uploading, setUploading] = useState(false);
-    const [bulkFiles, setBulkFiles] = useState<FileList | null>(null);
-    const [bulkResult, setBulkResult] = useState<BulkUploadResult | null>(null);
-    const [refreshTrigger, setRefreshTrigger] = useState(0);
-    const [selectedStickers, setSelectedStickers] = useState<Set<string>>(new Set());
-    const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
-    const [sortBy, setSortBy] = useState<'name' | 'created_at' | 'creator_id'>('name');
-    const [filterBy, setFilterBy] = useState<'all' | 'mine' | 'recent'>('recent');
-    const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
-    const [viewMode, setViewMode] = useState<'recent' | 'all' | 'mine'>('recent');
-    const [recentStickerIds, setRecentStickerIds] = useState<string[]>([]);
-    const [filteredStickers, setFilteredStickers] = useState<Sticker[]>([]);
+    const [activeTab, setActiveTab] = useState<TabKey>(() => {
+        try { return (localStorage.getItem('sp_tab') as TabKey) || 'recent'; } catch { return 'recent'; }
+    });
+    const [recentIds, setRecentIds] = useState<string[]>([]);
 
-    // Pagination states
     const [page, setPage] = useState(1);
     const [hasMore, setHasMore] = useState(true);
-    const [isLoadingMore, setIsLoadingMore] = useState(false);
+    const [loadingMore, setLoadingMore] = useState(false);
     const PER_PAGE = 50;
 
-    // Intersection Observer for Infinite Scroll
-    const observer = useRef<IntersectionObserver | null>(null);
-    const loadMoreTimeout = useRef<NodeJS.Timeout | null>(null);
+    const [showUpload, setShowUpload] = useState(false);
+    const [showBulkUpload, setShowBulkUpload] = useState(false);
+    const [multiSelect, setMultiSelect] = useState(false);
+    const [selected, setSelected] = useState<Set<string>>(new Set());
+    const [hoveredSticker, setHoveredSticker] = useState<Sticker | null>(null);
+    const [focusedIndex, setFocusedIndex] = useState(-1);
 
-    const lastStickerElementRef = useCallback((node: HTMLDivElement | null) => {
-        if (loading || isLoadingMore) return;
-        if (observer.current) observer.current.disconnect();
+    const [confirmDialog, setConfirmDialog] = useState<{
+        title: string; message: string; onConfirm: () => void;
+    } | null>(null);
+    const [sentToast, setSentToast] = useState<string | null>(null);
+    const [refresh, setRefresh] = useState(0);
 
-        observer.current = new IntersectionObserver(entries => {
-            if (entries[0].isIntersecting && hasMore) {
-                setPage(prevPage => prevPage + 1);
-            }
-        }, {
-            rootMargin: '300px', // Pre-fetch stickers before reaching bottom
-        });
-        if (node) observer.current.observe(node);
-    }, [loading, isLoadingMore, hasMore]);
+    const gridRef = useRef<HTMLDivElement>(null);
+    const loadMoreRef = useRef<HTMLDivElement>(null);
+    const observerRef = useRef<IntersectionObserver | null>(null);
 
-    // Debounce search query for performance
-    const debouncedSearchQuery = useDebounce(searchQuery, 300);
+    // ── Data loading ───────────────────────────────────────────────────────
 
-    // State to track auto-filter fallback
-    const [autoFilterAttempted, setAutoFilterAttempted] = useState(false);
-
-    const loadStickers = useCallback(async (isLoadMore = false) => {
+    const loadStickers = useCallback(async (pageNum: number, isLoadMore: boolean) => {
         try {
-            if (isLoadMore) {
-                setIsLoadingMore(true);
-            } else {
-                setLoading(true);
-                setPage(1);
-                setHasMore(true);
-            }
+            if (isLoadMore) setLoadingMore(true); else setLoading(true);
             setError(null);
 
-            const currentPage = isLoadMore ? page : 1;
-
-            // Get recent sticker IDs from localStorage
-            const recentIds = getRecentStickers();
-            setRecentStickerIds(recentIds);
+            const ids = getRecentStickers();
+            setRecentIds(ids);
 
             let result;
-            if (debouncedSearchQuery) {
-                result = await searchStickers(debouncedSearchQuery + (refreshTrigger ? `&t=${Date.now()}` : ''));
-            } else if (filterBy === 'recent' && recentIds.length > 0) {
-                // Fetch recent stickers specifically by their IDs
-                result = await getStickersByIds(recentIds);
-            } else if (filterBy === 'mine') {
-                // Pass currentUserId to fetch all user-owned stickers via backend
-                result = await getStickers(currentPage, PER_PAGE, sortBy, sortOrder, currentUserId);
+            if (debouncedSearch) {
+                result = await searchStickers(debouncedSearch);
+            } else if (activeTab === 'recent' && ids.length > 0) {
+                result = await getStickersByIds(ids);
+            } else if (activeTab === 'mine') {
+                result = await getStickers(pageNum, PER_PAGE, 'name', 'asc', currentUserId);
             } else {
-                // Pass sorting to backend
-                result = await getStickers(currentPage, PER_PAGE, sortBy, sortOrder);
+                result = await getStickers(pageNum, PER_PAGE, 'name', 'asc');
             }
 
-            let fetchedStickers = result.stickers;
-            const totalCount = result.total;
-
-            let newStickers: Sticker[];
             if (isLoadMore) {
-                newStickers = [...stickers, ...fetchedStickers];
-                setStickers(newStickers);
+                setStickers((prev) => [...prev, ...result.stickers]);
             } else {
-                newStickers = fetchedStickers;
-                setStickers(newStickers);
+                setStickers(result.stickers);
             }
 
-            // Update hasMore
-            if (debouncedSearchQuery || filterBy === 'recent') {
-                // We show all results at once for search and recent 
+            if (debouncedSearch || activeTab === 'recent') {
                 setHasMore(false);
             } else {
-                // 'all' and 'mine' now both support backend pagination
-                setHasMore(newStickers.length < totalCount && fetchedStickers.length > 0);
+                const total = isLoadMore ? stickers.length + result.stickers.length : result.stickers.length;
+                setHasMore(total < result.total && result.stickers.length > 0);
             }
-
-        } catch (err) {
-            setError('Failed to load stickers');
+        } catch {
+            setError('Failed to load');
         } finally {
             setLoading(false);
-            setIsLoadingMore(false);
+            setLoadingMore(false);
         }
-    }, [debouncedSearchQuery, refreshTrigger, filterBy, sortBy, sortOrder, page]);
+    }, [debouncedSearch, activeTab, currentUserId, stickers.length]);
 
-    // Reset and load when filters/search change
+    useEffect(() => { setPage(1); setHasMore(true); loadStickers(1, false); }, [activeTab, debouncedSearch, refresh]);
+    useEffect(() => { if (page > 1) loadStickers(page, true); }, [page]);
+
+    // Save active tab to localStorage
+    useEffect(() => { try { localStorage.setItem('sp_tab', activeTab); } catch {} }, [activeTab]);
+
+    // Infinite scroll
     useEffect(() => {
-        loadStickers(false);
-    }, [debouncedSearchQuery, filterBy, sortBy, sortOrder, refreshTrigger]);
+        if (loading || loadingMore || !hasMore) return;
+        observerRef.current?.disconnect();
+        observerRef.current = new IntersectionObserver((entries) => {
+            if (entries[0].isIntersecting) setPage((p) => p + 1);
+        }, { rootMargin: '200px' });
+        if (loadMoreRef.current) observerRef.current.observe(loadMoreRef.current);
+        return () => observerRef.current?.disconnect();
+    }, [loading, loadingMore, hasMore, stickers.length]);
 
-    // Load next page
+    // Auto-fallback
     useEffect(() => {
-        if (page > 1 && !debouncedSearchQuery) {
-            loadStickers(true);
+        if (loading || loadingMore || debouncedSearch) return;
+        if (stickers.length === 0) {
+            if (activeTab === 'recent') setActiveTab('mine');
+            else if (activeTab === 'mine') setActiveTab('all');
         }
-    }, [page]);
+    }, [stickers.length, activeTab, loading, loadingMore, debouncedSearch]);
 
-    // Update view mode based on filter selection
-    useEffect(() => {
-        if (filterBy === 'recent') {
-            setViewMode('recent');
-        } else if (filterBy === 'mine') {
-            setViewMode('mine');
-        } else {
-            setViewMode('all');
-        }
-    }, [filterBy]);
-
-    // Reset autoFilterAttempted when user manually changes filter
-    useEffect(() => {
-        setAutoFilterAttempted(false);
-    }, [filterBy]);
-
-
-    // Memoized filtered stickers for rendering
-    const displayStickers = useMemo(() => {
-        let filtered = stickers;
-
-        // Apply filters
-        if (filterBy === 'recent') {
-            // Re-order stickers to match recentStickerIds (which should be fully loaded now)
-            filtered = recentStickerIds
-                .map(id => stickers.find(s => s.id === id))
-                .filter((s): s is Sticker => s !== undefined);
-        } else if (filterBy === 'mine') {
-            filtered = stickers.filter(s => s.creator_id === currentUserId);
-        }
-
-        // Apply search query if not already handled by backend
-        if (debouncedSearchQuery) {
-            const query = debouncedSearchQuery.toLowerCase();
-            filtered = filtered.filter(s =>
-                s.name.toLowerCase().includes(query)
-            );
-        }
-
-        // Apply sorting (if not already sorted by backend properly for the specific filter)
-        return [...filtered].sort((a, b) => {
-            // SKIP sorting if we are in 'all' or 'mine' mode (already sorted by backend)
-            if ((filterBy === 'all' || filterBy === 'mine') && !debouncedSearchQuery) {
-                return 0; // Maintain backend order
-            }
-
-            let comparison = 0;
-            if (sortBy === 'name') {
-                comparison = a.name.localeCompare(b.name);
-            } else if (sortBy === 'created_at') {
-                comparison = (a.created_at || 0) - (b.created_at || 0);
-            } else if (sortBy === 'creator_id') {
-                comparison = a.creator_id.localeCompare(b.creator_id);
-            }
-            return sortOrder === 'asc' ? comparison : -comparison;
-        });
-    }, [stickers, filterBy, recentStickerIds, currentUserId, debouncedSearchQuery, sortBy, sortOrder]);
-
-    // Handle auto-filter fallback if no stickers are found in the priority categories
-    useEffect(() => {
-        if (!loading && !isLoadingMore && !autoFilterAttempted && stickers.length > 0) {
-            if (filterBy === 'recent' && displayStickers.length === 0) {
-                console.log('[Sticker] No recent stickers, falling back to Mine');
-                setFilterBy('mine');
-                setAutoFilterAttempted(true);
-            } else if (filterBy === 'mine' && displayStickers.length === 0) {
-                console.log('[Sticker] No "mine" stickers, falling back to All');
-                setFilterBy('all');
-                setAutoFilterAttempted(true);
-            }
-        }
-    }, [displayStickers.length, filterBy, loading, isLoadingMore, autoFilterAttempted, stickers.length]);
+    // ── Keyboard navigation ────────────────────────────────────────────────
 
     useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
+        const handler = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
-                onClose();
+                if (confirmDialog) setConfirmDialog(null);
+                else onClose();
+                return;
+            }
+
+            const grid = gridRef.current;
+            if (!grid) return;
+            const items = grid.querySelectorAll<HTMLElement>('[data-sticker-id]');
+            if (items.length === 0) return;
+
+            // Calculate grid columns
+            const gridStyle = window.getComputedStyle(grid);
+            const columns = gridStyle.gridTemplateColumns.split(' ').length;
+
+            if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                setFocusedIndex((prev) => Math.min(prev + 1, items.length - 1));
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                setFocusedIndex((prev) => Math.max(prev - 1, 0));
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setFocusedIndex((prev) => Math.min(prev + columns, items.length - 1));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setFocusedIndex((prev) => Math.max(prev - columns, 0));
+            } else if (e.key === 'Enter' && focusedIndex >= 0 && focusedIndex < items.length) {
+                e.preventDefault();
+                const id = items[focusedIndex].dataset.stickerId;
+                const sticker = stickers.find((s) => s.id === id);
+                if (sticker) handleSelect(sticker);
             }
         };
-        document.addEventListener('keydown', handleKeyDown);
-        return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [onClose]);
 
-    const handleUpload = async () => {
-        console.log('[Sticker] Upload clicked', { uploadName, uploadFile, uploadMode, channelId });
+        document.addEventListener('keydown', handler);
+        return () => document.removeEventListener('keydown', handler);
+    }, [onClose, focusedIndex, stickers, confirmDialog]);
 
-        if (!uploadName.trim()) {
-            setError('Please provide a name');
-            return;
+    // Scroll focused item into view
+    useEffect(() => {
+        if (focusedIndex < 0) return;
+        const grid = gridRef.current;
+        if (!grid) return;
+        const items = grid.querySelectorAll<HTMLElement>('[data-sticker-id]');
+        if (items[focusedIndex]) {
+            items[focusedIndex].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
         }
+    }, [focusedIndex]);
 
-        if (uploadName.trim().length > 10) {
-            setError('Name must be 10 characters or less');
-            return;
-        }
+    // ── Handlers ───────────────────────────────────────────────────────────
 
-        if (uploadMode === 'file' && !uploadFile) {
-            setError('Please select a file');
-            return;
-        }
-
-        try {
-            setUploading(true);
-            setError(null);
-
-            if (uploadMode === 'file' && uploadFile) {
-                console.log('[Sticker] Uploading file...', uploadName, uploadFile.name);
-                await uploadSticker(uploadName.trim(), uploadFile, channelId);
-            }
-
-            console.log('[Sticker] Upload success');
-            setUploadName('');
-            setUploadFile(null);
-            setShowUpload(false);
-            // Add delay to ensure server has processed the upload
-            setTimeout(() => {
-                setRefreshTrigger(prev => prev + 1); // Trigger refresh
-            }, 500);
-        } catch (err) {
-            console.error('[Sticker] Upload error:', err);
-            setError(err instanceof Error ? err.message : 'Failed to upload sticker');
-        } finally {
-            setUploading(false);
-        }
+    const handleSelect = (sticker: Sticker) => {
+        onSelect(sticker);
+        setSentToast(sticker.name);
     };
 
-    const handleBulkUpload = async () => {
-        if (!bulkFiles || bulkFiles.length === 0) {
-            setError('Please select files');
-            return;
-        }
-
-        try {
-            setUploading(true);
-            setError(null);
-            setBulkResult(null);
-
-            const result = await bulkUploadStickers(bulkFiles, channelId);
-            setBulkResult(result);
-
-            if (result.success.length > 0) {
-                loadStickers();
-            }
-
-            if (Object.keys(result.failed).length === 0) {
-                setBulkFiles(null);
-                setShowUpload(false);
-            }
-        } catch (err) {
-            console.error('[Sticker] Bulk upload error:', err);
-            setError(err instanceof Error ? err.message : 'Failed to upload stickers');
-        } finally {
-            setUploading(false);
-        }
+    const handleDelete = (sticker: Sticker) => {
+        setConfirmDialog({
+            title: `Delete "${sticker.name}"?`,
+            message: 'This cannot be undone.',
+            onConfirm: async () => {
+                try { await deleteSticker(sticker.id); setRefresh((r) => r + 1); } catch {}
+                setConfirmDialog(null);
+            },
+        });
     };
 
-    const handleDelete = async (sticker: Sticker) => {
-        if (!window.confirm(`Delete sticker "${sticker.name}"?`)) {
-            return;
-        }
-
-        try {
-            await deleteSticker(sticker.id);
-            loadStickers();
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to delete sticker');
-        }
+    const handleBulkDelete = () => {
+        if (selected.size === 0) return;
+        setConfirmDialog({
+            title: `Delete ${selected.size} sticker(s)?`,
+            message: 'This cannot be undone.',
+            onConfirm: async () => {
+                try { await bulkDeleteStickers(Array.from(selected)); setSelected(new Set()); setMultiSelect(false); setRefresh((r) => r + 1); } catch {}
+                setConfirmDialog(null);
+            },
+        });
     };
 
-    const handleBulkDelete = async () => {
-        if (selectedStickers.size === 0) {
-            return;
-        }
-
-        if (!window.confirm(`Delete ${selectedStickers.size} selected sticker(s)?`)) {
-            return;
-        }
-
-        try {
-            const ids = Array.from(selectedStickers);
-            await bulkDeleteStickers(ids);
-            setIsMultiSelectMode(false);
-            setSelectedStickers(new Set());
-            loadStickers();
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to delete stickers');
-        }
+    const toggleMulti = (id: string) => {
+        setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
     };
 
-    const toggleStickerSelection = (stickerId: string) => {
-        const newSelected = new Set(selectedStickers);
-        if (newSelected.has(stickerId)) {
-            newSelected.delete(stickerId);
-        } else {
-            newSelected.add(stickerId);
-        }
-        setSelectedStickers(newSelected);
-    };
+    // ── Display list ───────────────────────────────────────────────────────
 
+    const displayStickers = useMemo(() => {
+        let list = stickers;
+        if (activeTab === 'recent') {
+            list = recentIds.map((id) => stickers.find((s) => s.id === id)).filter((s): s is Sticker => !!s);
+        }
+        if (debouncedSearch && activeTab !== 'all') {
+            const q = debouncedSearch.toLowerCase();
+            list = list.filter((s) => s.name.toLowerCase().includes(q));
+        }
+        return list;
+    }, [stickers, activeTab, recentIds, debouncedSearch]);
+
+    // ── Tab config ─────────────────────────────────────────────────────────
+
+    const tabs: { key: TabKey; label: string; icon: React.ReactNode; count: number }[] = [
+        { key: 'recent', label: 'Recent', icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z" fill="currentColor" /></svg>, count: recentIds.length },
+        { key: 'mine', label: 'Mine', icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" fill="currentColor" /></svg>, count: stickers.filter((s) => s.creator_id === currentUserId).length },
+        { key: 'all', label: 'All', icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 8h4V4H4v4zm6 12h4v-4h-4v4zm-6 0h4v-4H4v4zm0-6h4v-4H4v4zm6 0h4v-4h-4v4zm6-10v4h4V4h-4zm-6 4h4V4h-4v4zm6 6h4v-4h-4v4zm0 6h4v-4h-4v4z" fill="currentColor" /></svg>, count: stickers.length },
+    ];
+
+    // ── Render ─────────────────────────────────────────────────────────────
 
     return (
         <>
             <style>{`
-                @keyframes fadeIn {
-                    from { opacity: 0; }
-                    to { opacity: 1; }
+                @keyframes spIn { from { opacity:0; transform: scale(0.96); } to { opacity:1; transform: scale(1); } }
+                @keyframes spFade { from { opacity:0; } to { opacity:1; } }
+                @keyframes spPop { 0% { transform: scale(1); } 50% { transform: scale(1.15); } 100% { transform: scale(1); } }
+                @keyframes spSlideUp { from { opacity:0; transform: translateY(6px); } to { opacity:1; transform: translateY(0); } }
+                .sp-item { 
+                    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important; 
+                    cursor: pointer;
                 }
-                @keyframes slideUp {
-                    from { opacity: 0; transform: translateY(20px) scale(0.95); }
-                    to { opacity: 1; transform: translateY(0) scale(1); }
+                .sp-item:hover { 
+                    background: var(--center-channel-color-08, rgba(0,0,0,0.04)) !important; 
+                    transform: translateY(-4px) scale(1.04) !important; 
+                    box-shadow: 0 8px 20px rgba(0,0,0,0.12) !important;
+                    border-color: var(--center-channel-color-16, rgba(0,0,0,0.08)) !important;
                 }
-                .sticker-item:hover {
-                    background-color: var(--center-channel-color-08, #f0f0f0) !important;
-                    border-color: var(--center-channel-color-24, #ddd) !important;
-                    transform: translateY(-2px);
-                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+                .sp-item-img { 
+                    transition: transform 0.2s ease, filter 0.2s ease !important; 
                 }
-                .sticker-item img {
-                    transition: transform 0.2s ease;
+                .sp-item:hover .sp-item-img { 
+                    transform: scale(1.08) !important; 
+                    filter: brightness(1.05) !important;
                 }
-                .sticker-item:hover img {
-                    transform: scale(1.05);
+                .sp-item:active { 
+                    transform: translateY(-1px) scale(1.01) !important; 
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.08) !important;
+                    transition-duration: 0.1s !important;
+                }
+                .sp-tab:hover { background: var(--center-channel-color-08, #f0f0f0) !important; }
+                @media (max-width: 900px) {
+                    .sp-preview-panel { display: none !important; }
                 }
             `}</style>
-            <div style={styles.overlay} onClick={onClose}>
-                <div style={styles.container} onClick={(e) => e.stopPropagation()}>
-                    <div style={styles.header}>
-                        <h3 style={styles.title}>Stickers</h3>
-                        {isMultiSelectMode ? (
-                            <div style={styles.headerActions}>
-                                <span style={styles.selectedCount}>
-                                    {selectedStickers.size} selected
-                                </span>
-                                <button
-                                    style={styles.cancelSelectButton}
-                                    onClick={() => {
-                                        setIsMultiSelectMode(false);
-                                        setSelectedStickers(new Set());
-                                    }}
-                                >
-                                    Cancel
+
+            {/* Overlay */}
+            <div style={S.overlay} onClick={onClose}>
+                {/* Modal */}
+                <div style={S.modal} onClick={(e) => e.stopPropagation()}>
+                    {/* ── Sidebar ────────────────────────────────────── */}
+                    <div style={S.sidebar}>
+                        {/* Search */}
+                        <div style={S.sidebarSearch}>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ position: 'absolute', left: 8, color: 'var(--center-channel-color-56, #aaa)', pointerEvents: 'none' }}>
+                                <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" fill="currentColor" />
+                            </svg>
+                            <input
+                                type="search"
+                                placeholder="Search..."
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                style={S.sidebarSearchInput}
+                            />
+                            {searchQuery && (
+                                <button style={S.sidebarSearchClear} onClick={() => setSearchQuery('')}>
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="currentColor" /></svg>
                                 </button>
-                            </div>
-                        ) : (
-                            <button style={styles.closeButton} onClick={onClose}>
-                                &times;
-                            </button>
-                        )}
-                    </div>
-
-                    <div style={styles.searchContainer}>
-                        <input
-                            type="text"
-                            placeholder="Search stickers..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            style={styles.searchInput}
-                        />
-                        {isMultiSelectMode ? (
-                            <button
-                                style={styles.deleteButtonLarge}
-                                onClick={handleBulkDelete}
-                                disabled={selectedStickers.size === 0}
-                            >
-                                Delete Selected
-                            </button>
-                        ) : (
-                            <button
-                                style={styles.addButton}
-                                onClick={() => setShowUpload(!showUpload)}
-                            >
-                                {showUpload ? 'Cancel' : '+ Add'}
-                            </button>
-                        )}
-                    </div>
-
-                    {!isMultiSelectMode && (
-                        <div style={styles.viewInfoContainer}>
-                            {viewMode === 'mine' && (
-                                <div style={styles.viewModeBadge}>
-                                    My Stickers
-                                </div>
-                            )}
-                            {viewMode === 'all' && (
-                                <div style={styles.viewModeBadge}>
-                                    All Stickers
-                                </div>
                             )}
                         </div>
-                    )}
 
-                    {!isMultiSelectMode && (
-                        <div style={styles.filterSortContainer}>
-                            <div style={styles.filterGroup}>
-                                <label style={styles.filterLabel}>Filter:</label>
-                                <select
-                                    value={filterBy}
-                                    onChange={(e) => setFilterBy(e.target.value as 'all' | 'mine' | 'recent')}
-                                    style={styles.selectInput}
-                                >
-                                    <option value="all">All Stickers</option>
-                                    <option value="mine">My Stickers</option>
-                                    <option value="recent">Recent Stickers</option>
-                                </select>
-                            </div>
-                            <div style={styles.sortGroup}>
-                                <label style={styles.filterLabel}>Sort by:</label>
-                                <select
-                                    value={sortBy}
-                                    onChange={(e) => setSortBy(e.target.value as 'name' | 'created_at' | 'creator_id')}
-                                    style={styles.selectInput}
-                                >
-                                    <option value="name">Name</option>
-                                    <option value="created_at">Date Created</option>
-                                    <option value="creator_id">Creator</option>
-                                </select>
+                        {/* Tabs */}
+                        <div style={S.sidebarTabs}>
+                            {tabs.map((tab) => (
                                 <button
-                                    style={styles.sortOrderButton}
-                                    onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-                                    title={`Sort ${sortOrder === 'asc' ? 'descending' : 'ascending'}`}
+                                    key={tab.key}
+                                    className="sp-tab"
+                                    style={activeTab === tab.key ? S.tabActive : S.tab}
+                                    onClick={() => { setActiveTab(tab.key); setSearchQuery(''); setFocusedIndex(-1); setShowUpload(false); }}
                                 >
-                                    {sortOrder === 'asc' ? '↑' : '↓'}
+                                    <span style={S.tabIcon}>{tab.icon}</span>
+                                    <span style={S.tabLabel}>{tab.label}</span>
+                                    <span style={S.tabCount}>{tab.count}</span>
                                 </button>
-                            </div>
-                            <button
-                                style={styles.multiSelectButton}
-                                onClick={() => setIsMultiSelectMode(true)}
-                                disabled={stickers.length === 0}
-                            >
-                                Select Stickers
-                            </button>
+                            ))}
                         </div>
-                    )}
 
-                    {showUpload && (
-                        <div style={styles.uploadContainer}>
-                            <div style={styles.tabContainer}>
-                                <button
-                                    style={{
-                                        ...styles.tab,
-                                        ...(uploadMode === 'file' ? styles.tabActive : {}),
-                                    }}
-                                    onClick={() => { setUploadMode('file'); setBulkResult(null); }}
-                                >
-                                    File
-                                </button>
-                                <button
-                                    style={{
-                                        ...styles.tab,
-                                        ...(uploadMode === 'bulk' ? styles.tabActive : {}),
-                                    }}
-                                    onClick={() => { setUploadMode('bulk'); setBulkResult(null); }}
-                                >
-                                    Bulk
-                                </button>
-                            </div>
-                            {uploadMode === 'bulk' ? (
+                        {/* Sidebar bottom actions */}
+                        <div style={S.sidebarBottom}>
+                            {multiSelect ? (
                                 <>
-                                    <div style={styles.bulkHint}>
-                                        Select multiple files. Sticker names will be set from filenames (without extension).
+                                    <div style={S.multiInfo}>{selected.size} sel.</div>
+                                    <div style={{ display: 'flex', gap: 4 }}>
+                                        <button style={S.sidebarIconBtn} onClick={() => { setMultiSelect(false); setSelected(new Set()); }} title="Cancel">
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="currentColor" /></svg>
+                                        </button>
+                                        <button style={{ ...S.sidebarIconBtn, color: selected.size > 0 ? 'var(--error-text-color, #d24b4e)' : undefined }} onClick={handleBulkDelete} disabled={selected.size === 0} title="Delete selected">
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" fill="currentColor" /></svg>
+                                        </button>
                                     </div>
-                                    <div style={styles.fileInputWrapper}>
-                                        <input
-                                            type="file"
-                                            id="sticker-bulk-input"
-                                            accept="image/png,image/gif,image/jpeg,image/webp"
-                                            multiple
-                                            onChange={(e) => {
-                                                setBulkFiles(e.target.files);
-                                                setBulkResult(null);
-                                            }}
-                                            style={styles.fileInputHidden}
-                                        />
-                                        <label htmlFor="sticker-bulk-input" style={styles.fileInputLabel}>
-                                            {bulkFiles ? `${bulkFiles.length} file(s) selected` : 'Choose files...'}
-                                        </label>
-                                    </div>
-                                    {bulkResult && (
-                                        <div style={styles.bulkResult}>
-                                            {bulkResult.success.length > 0 && (
-                                                <div style={styles.bulkSuccess}>
-                                                    Added: {bulkResult.success.join(', ')}
-                                                </div>
-                                            )}
-                                            {Object.keys(bulkResult.failed).length > 0 && (
-                                                <div style={styles.bulkFailed}>
-                                                    Failed:
-                                                    {Object.entries(bulkResult.failed).map(([file, reason]) => (
-                                                        <div key={file} style={styles.bulkFailedItem}>
-                                                            {file}: {reason}
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-                                    <button
-                                        style={{
-                                            ...styles.uploadButton,
-                                            ...(uploading || !bulkFiles || bulkFiles.length === 0 ? styles.uploadButtonDisabled : {}),
-                                        }}
-                                        onClick={handleBulkUpload}
-                                        disabled={uploading || !bulkFiles || bulkFiles.length === 0}
-                                    >
-                                        {uploading ? 'Uploading...' : !bulkFiles ? 'Select files' : `Upload ${bulkFiles.length} file(s)`}
-                                    </button>
                                 </>
                             ) : (
                                 <>
-                                    <div style={styles.inputGroup}>
-                                        <input
-                                            type="text"
-                                            placeholder="Sticker name (max 10 chars)"
-                                            value={uploadName}
-                                            onChange={(e) => setUploadName(e.target.value)}
-                                            style={styles.uploadInput}
-                                            maxLength={10}
-                                        />
-                                        <div style={styles.fileInputWrapper}
-                                            onDragOver={(e) => e.preventDefault()}
-                                            onDrop={(e) => {
-                                                e.preventDefault();
-                                                const files = e.dataTransfer.files;
-                                                if (files.length > 0) {
-                                                    setUploadFile(files[0]);
-                                                }
-                                            }}>
-                                            <input
-                                                type="file"
-                                                id="sticker-file-input"
-                                                accept="image/png,image/gif,image/jpeg,image/webp"
-                                                onChange={(e) => {
-                                                    console.log('[Sticker] File selected:', e.target.files?.[0]);
-                                                    setUploadFile(e.target.files?.[0] || null);
-                                                }}
-                                                style={styles.fileInputHidden}
-                                            />
-                                            <label htmlFor="sticker-file-input" style={styles.fileInputLabel}>
-                                                <span style={styles.fileIcon}>📎</span>
-                                                {uploadFile ? uploadFile.name : 'Choose file or drag & drop'}
-                                            </label>
-                                        </div>
-                                    </div>
-                                    <button
-                                        style={{
-                                            ...styles.uploadButton,
-                                            ...(uploading || !uploadName.trim() || !uploadFile
-                                                ? styles.uploadButtonDisabled
-                                                : {}),
-                                        }}
-                                        onClick={handleUpload}
-                                        disabled={uploading || !uploadName.trim() || !uploadFile}
-                                    >
-                                        {uploading
-                                            ? 'Uploading...'
-                                            : !uploadName.trim()
-                                                ? 'Enter name'
-                                                : !uploadFile
-                                                    ? 'Select file'
-                                                    : 'Upload Sticker'}
+                                    <button style={S.sidebarAction} onClick={() => { setShowUpload(!showUpload); setShowBulkUpload(false); }}>
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z" fill="currentColor" /></svg>
+                                        <span style={{ marginLeft: 4 }}>Upload</span>
+                                    </button>
+                                    <button style={S.sidebarAction} onClick={() => { setShowBulkUpload(!showBulkUpload); setShowUpload(false); }}>
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z" fill="currentColor" /></svg>
+                                        <span style={{ marginLeft: 4 }}>Bulk</span>
+                                    </button>
+                                    <button style={S.sidebarAction} onClick={() => { setMultiSelect(!multiSelect); setSelected(new Set()); }}>
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M3 5h2V3c-1.1 0-2 .9-2 2zm0 8h2v-2H3v2zm4 8h2v-2H7v2zM3 9h2V7H3v2zm10-6h-2v2h2V3zm6 0v2h2c0-1.1-.9-2-2-2zm-6 18h2v-2h-2v2zm-8-8h2v-2H3v2zm0 4h2v-2H3v2zm8 4h2v-2h-2v2zm8-8h2v-2h-2v2zm0 8c1.1 0 2-.9 2-2h-2v2zm0-4h2v-2h-2v2zm0-4h2V7h-2v2zm0 8h2v-2h-2v2z" fill="currentColor" /></svg>
+                                        <span style={{ marginLeft: 4 }}>Select</span>
                                     </button>
                                 </>
                             )}
                         </div>
-                    )}
+                    </div>
 
-                    {error && <div style={styles.error}>{error}</div>}
+                    {/* ── Content ────────────────────────────────────── */}
+                    <div style={S.content}>
+                        {/* Content header */}
+                        <div style={S.contentHeader}>
+                            <span style={S.contentTitle}>
+                                {activeTab === 'recent' ? 'Recent' : activeTab === 'mine' ? 'My Stickers' : 'All Stickers'}
+                            </span>
+                            <span style={S.contentCount}>{displayStickers.length}</span>
+                            <div style={{ flex: 1 }} />
+                            <button style={S.closeBtn} onClick={onClose} title="Close (Esc)">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="currentColor" />
+                                </svg>
+                            </button>
+                        </div>
 
-                    <div style={styles.grid}>
-                        {loading ? (
-                            <div style={styles.loading}>Loading...</div>
-                        ) : stickers.length === 0 ? (
-                            <div style={styles.empty}>
-                                {debouncedSearchQuery ? 'No stickers found' : 'No stickers yet. Add one!'}
+                        {/* Upload panel (slide down) */}
+                        {showUpload && (
+                            <div style={S.uploadContainer}>
+                                <UploadPanel channelId={channelId} onDone={() => { setRefresh((r) => r + 1); setShowUpload(false); }} />
                             </div>
-                        ) : (
-                            <>
-                                {displayStickers.map((sticker, index) => {
-                                    const itemProps = {
-                                        key: sticker.id,
-                                        sticker,
-                                        index,
-                                        isMultiSelectMode,
-                                        isSelected: selectedStickers.has(sticker.id),
-                                        onSelect,
-                                        onToggle: toggleStickerSelection,
-                                        onDelete: handleDelete,
-                                        currentUserId,
-                                        styles,
-                                        getStickerImageUrl,
-                                    };
+                        )}
 
-                                    if (displayStickers.length === index + 1) {
-                                        return (
-                                            <div ref={lastStickerElementRef} key={sticker.id}>
-                                                <StickerItem {...itemProps} />
-                                            </div>
-                                        );
-                                    }
-                                    return <StickerItem {...itemProps} />;
-                                })}
-                                {isLoadingMore && <div style={styles.loading}>Loading more...</div>}
+                        {/* Bulk upload panel (slide down) */}
+                        {showBulkUpload && (
+                            <div style={S.uploadContainer}>
+                                <BulkUploadPanel channelId={channelId} onDone={() => { setRefresh((r) => r + 1); setShowBulkUpload(false); }} />
+                            </div>
+                        )}
+
+                        {/* Error */}
+                        {error && <div style={S.error}>{error}</div>}
+
+                        {/* Sticker grid */}
+                        <div ref={gridRef} style={S.grid}>
+                            {(showUpload || showBulkUpload) ? (
+                                <div style={S.stateMsg}>
+                                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.3, marginBottom: 8 }}>
+                                        <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" fill="currentColor" />
+                                    </svg>
+                                    {showUpload ? 'Upload a single sticker' : 'Upload multiple stickers'}
+                                </div>
+                            ) : loading ? (
+                                <div style={S.stateMsg}><div style={S.spinner} /></div>
+                            ) : displayStickers.length === 0 ? (
+                                <div style={S.stateMsg}>
+                                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.3, marginBottom: 8 }}>
+                                        <path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z" fill="currentColor" />
+                                    </svg>
+                                    {debouncedSearch ? 'No results' : 'No stickers'}
+                                </div>
+                            ) : (
+                                <>
+                                    {displayStickers.map((sticker, i) => (
+                                        <StickerItem
+                                            key={sticker.id}
+                                            sticker={sticker}
+                                            isOwner={sticker.creator_id === currentUserId}
+                                            isSelected={selected.has(sticker.id)}
+                                            isMultiSelect={multiSelect}
+                                            isFocused={focusedIndex === i}
+                                            onSelect={handleSelect}
+                                            onDelete={handleDelete}
+                                            onToggleMulti={toggleMulti}
+                                            onHover={setHoveredSticker}
+                                        />
+                                    ))}
+                                    {hasMore && !debouncedSearch && activeTab !== 'recent' && (
+                                        <div ref={loadMoreRef} style={{ gridColumn: '1 / -1' }}>
+                                            {loadingMore && <div style={S.stateMsg}><div style={S.spinner} /></div>}
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* ── Preview Panel (always visible) ────────────── */}
+                    <div className="sp-preview-panel" style={S.preview}>
+                        {hoveredSticker ? (
+                            <>
+                                <img
+                                    src={getStickerImageUrl(hoveredSticker.id)}
+                                    alt={hoveredSticker.name}
+                                    style={S.previewImage}
+                                />
+                                <span style={S.previewName}>{hoveredSticker.name}</span>
+                                <span style={S.previewSize}>{hoveredSticker.file_size ? `${(hoveredSticker.file_size / 1024).toFixed(1)} KB` : ''}</span>
                             </>
+                        ) : (
+                            <span style={S.previewEmpty}>Hover to preview</span>
                         )}
                     </div>
                 </div>
             </div>
+
+            {/* Toast */}
+            {sentToast && <SentToast name={sentToast} onDone={() => setSentToast(null)} />}
+
+            {/* Confirm Dialog */}
+            {confirmDialog && (
+                <ConfirmDialog
+                    title={confirmDialog.title}
+                    message={confirmDialog.message}
+                    danger
+                    onConfirm={confirmDialog.onConfirm}
+                    onCancel={() => setConfirmDialog(null)}
+                />
+            )}
         </>
     );
 };
 
-// Use CSS variables from Mattermost theme
-const styles: { [key: string]: React.CSSProperties } = {
+// ─── Styles ─────────────────────────────────────────────────────────────────
+
+const S: Record<string, React.CSSProperties> = {
+    // Overlay
     overlay: {
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.6)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        position: 'fixed', inset: 0,
+        backgroundColor: 'rgba(0,0,0,0.55)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
         zIndex: 10000,
-        backdropFilter: 'blur(4px)',
-        animation: 'fadeIn 0.2s ease-out',
+        animation: 'spFade 0.15s ease-out',
+        backdropFilter: 'blur(2px)',
     },
-    container: {
-        backgroundColor: 'var(--center-channel-bg, #ffffff)',
-        color: 'var(--center-channel-color, #3d3c40)',
-        borderRadius: '12px',
-        width: '80vw',
-        maxWidth: '700px',
-        maxHeight: '90vh',
-        minHeight: '600px',
+
+    // Modal - sidebar + content + preview layout
+    modal: {
+        position: 'relative',
         display: 'flex',
-        flexDirection: 'column',
-        boxShadow: '0 20px 40px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.05)',
-        animation: 'slideUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
+        width: 'min(96vw, 1100px)',
+        height: 'min(88vh, 680px)',
+        borderRadius: 12,
         overflow: 'hidden',
-    },
-    header: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: '12px 16px',
-        borderBottom: '1px solid var(--center-channel-color-16, #e0e0e0)',
-    },
-    headerActions: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-    },
-    selectedCount: {
-        fontSize: '14px',
-        color: 'var(--center-channel-color-56, #666)',
-    },
-    cancelSelectButton: {
-        padding: '4px 12px',
         backgroundColor: 'var(--center-channel-bg, #fff)',
-        color: 'var(--center-channel-color, #3d3c40)',
-        border: '1px solid var(--center-channel-color-24, #ddd)',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '14px',
+        boxShadow: '0 24px 64px rgba(0,0,0,0.3)',
+        animation: 'spIn 0.2s cubic-bezier(0.34,1.56,0.64,1)',
     },
-    title: {
-        margin: 0,
-        fontSize: '16px',
-        fontWeight: 600,
-        color: 'var(--center-channel-color, #3d3c40)',
-    },
-    closeButton: {
-        background: 'none',
-        border: 'none',
-        fontSize: '24px',
-        cursor: 'pointer',
-        color: 'var(--center-channel-color-56, #666)',
-        padding: '0 4px',
-    },
-    searchContainer: {
-        display: 'flex',
-        gap: '8px',
-        padding: '12px 16px',
-        borderBottom: '1px solid var(--center-channel-color-16, #e0e0e0)',
-    },
-    searchInput: {
-        flex: 1,
-        padding: '8px 12px',
-        border: '1px solid var(--center-channel-color-24, #ddd)',
-        borderRadius: '4px',
-        fontSize: '14px',
-        backgroundColor: 'var(--center-channel-bg, #fff)',
-        color: 'var(--center-channel-color, #3d3c40)',
-    },
-    toolbar: {
-        display: 'flex',
-        padding: '8px 16px',
-        borderBottom: '1px solid var(--center-channel-color-16, #e0e0e0)',
-        gap: '8px',
-    },
-    viewInfoContainer: {
-        padding: '8px 16px',
-        backgroundColor: 'var(--button-bg-08, rgba(22, 109, 224, 0.08))',
-        borderBottom: '1px solid var(--center-channel-color-16, #e0e0e0)',
-        display: 'flex',
-        alignItems: 'center',
-    },
-    viewModeBadge: {
-        fontSize: '13px',
-        fontWeight: 500,
-        color: 'var(--button-bg, #166de0)',
-    },
-    filterSortContainer: {
-        display: 'flex',
-        flexWrap: 'wrap',
-        gap: '16px',
-        padding: '8px 16px',
-        borderBottom: '1px solid var(--center-channel-color-16, #e0e0e0)',
-        backgroundColor: 'var(--center-channel-color-04, #f5f5f5)',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-    },
-    filterGroup: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-    },
-    sortGroup: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '4px',
-    },
-    filterLabel: {
-        fontSize: '13px',
-        color: 'var(--center-channel-color-56, #666)',
-        fontWeight: 500,
-    },
-    selectInput: {
-        padding: '6px 8px',
-        border: '1px solid var(--center-channel-color-24, #ddd)',
-        borderRadius: '4px',
-        backgroundColor: 'var(--center-channel-bg, #fff)',
-        color: 'var(--center-channel-color, #3d3c40)',
-        fontSize: '13px',
-        cursor: 'pointer',
-    },
-    sortOrderButton: {
-        padding: '6px',
-        border: '1px solid var(--center-channel-color-24, #ddd)',
-        borderRadius: '4px',
-        backgroundColor: 'var(--center-channel-bg, #fff)',
-        color: 'var(--center-channel-color, #3d3c40)',
-        cursor: 'pointer',
-        fontSize: '12px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: '32px',
-    },
-    multiSelectButton: {
-        padding: '6px 12px',
-        backgroundColor: 'var(--center-channel-bg, #fff)',
-        color: 'var(--button-bg, #166de0)',
-        border: '1px solid var(--button-bg, #166de0)',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '13px',
-        fontWeight: 500,
-    },
-    deleteButtonLarge: {
-        padding: '8px 16px',
-        backgroundColor: 'var(--danger-color, #c10000)',
-        color: 'var(--button-color, #fff)',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '14px',
-        fontWeight: 600,
-        opacity: 1,
-        transition: 'opacity 0.2s',
-    },
-    addButton: {
-        padding: '8px 16px',
-        backgroundColor: 'var(--button-bg, #166de0)',
-        color: 'var(--button-color, #fff)',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '14px',
-        fontWeight: 600,
-    },
-    uploadContainer: {
+
+    // ── Sidebar ────────────────────────────────────────────────────
+    sidebar: {
+        width: 160,
+        flexShrink: 0,
         display: 'flex',
         flexDirection: 'column',
-        gap: '8px',
-        padding: '12px 16px',
-        backgroundColor: 'var(--center-channel-color-04, #f5f5f5)',
-        borderBottom: '1px solid var(--center-channel-color-16, #e0e0e0)',
+        borderRight: '1px solid var(--center-channel-color-12, #eee)',
+        backgroundColor: 'var(--center-channel-color-04, #fafafa)',
     },
-    uploadInput: {
-        padding: '8px 12px',
-        border: '1px solid var(--center-channel-color-24, #ddd)',
-        borderRadius: '4px',
-        fontSize: '14px',
+
+    sidebarSearch: {
+        position: 'relative',
+        padding: '12px 10px 8px',
+    },
+    sidebarSearchInput: {
+        width: '100%',
+        padding: '7px 24px 7px 28px',
+        borderRadius: 6,
+        border: '1px solid var(--center-channel-color-16, #e0e0e0)',
+        fontSize: 12,
         backgroundColor: 'var(--center-channel-bg, #fff)',
-        color: 'var(--center-channel-color, #3d3c40)',
+        color: 'var(--center-channel-color)',
+        outline: 'none',
+        boxSizing: 'border-box',
     },
-    tabContainer: {
-        display: 'flex',
-        gap: '4px',
-    },
-    tab: {
-        flex: 1,
-        padding: '6px 12px',
-        border: '1px solid var(--center-channel-color-24, #ddd)',
-        borderRadius: '4px',
-        backgroundColor: 'var(--center-channel-bg, #fff)',
-        color: 'var(--center-channel-color, #3d3c40)',
+    sidebarSearchClear: {
+        position: 'absolute',
+        right: 14,
+        top: '50%',
+        transform: 'translateY(-50%)',
+        width: 16, height: 16,
+        borderRadius: '50%',
+        border: 'none',
+        background: 'var(--center-channel-color-16, #ddd)',
+        color: 'var(--center-channel-color-56, #888)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
         cursor: 'pointer',
-        fontSize: '13px',
+        padding: 0,
+    },
+
+    sidebarTabs: {
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 1,
+        padding: '0 6px',
+        overflowY: 'auto',
+    },
+
+    // Tab items
+    tab: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '8px 10px',
+        borderRadius: 6,
+        border: 'none',
+        background: 'transparent',
+        color: 'var(--center-channel-color-56, #888)',
+        cursor: 'pointer',
+        fontSize: 13,
+        fontWeight: 500,
+        textAlign: 'left',
+        transition: 'all 0.12s',
     },
     tabActive: {
-        backgroundColor: 'var(--button-bg, #166de0)',
-        color: 'var(--button-color, #fff)',
-        borderColor: 'var(--button-bg, #166de0)',
-    },
-    fileInputWrapper: {
-        position: 'relative',
-    },
-    fileInputHidden: {
-        position: 'absolute',
-        width: '1px',
-        height: '1px',
-        padding: 0,
-        margin: '-1px',
-        overflow: 'hidden',
-        clip: 'rect(0, 0, 0, 0)',
-        border: 0,
-    },
-    inputGroup: {
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '8px',
-    },
-    fileInputLabel: {
-        padding: '12px 16px',
-        backgroundColor: 'var(--center-channel-color-08, #f0f0f0)',
-        border: '2px dashed var(--center-channel-color-24, #ddd)',
-        borderRadius: '8px',
-        cursor: 'pointer',
-        fontSize: '14px',
-        textAlign: 'center',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
-        color: 'var(--center-channel-color, #3d3c40)',
-        transition: 'all 0.2s ease',
-        minHeight: '48px',
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'center',
-        gap: '8px',
-    },
-    fileIcon: {
-        fontSize: '16px',
-    },
-    uploadButton: {
-        padding: '8px 16px',
-        backgroundColor: 'var(--button-bg, #166de0)',
-        color: 'var(--button-color, #fff)',
+        gap: 6,
+        padding: '8px 10px',
+        borderRadius: 6,
         border: 'none',
-        borderRadius: '4px',
+        background: 'var(--button-bg, #166de0)',
+        color: 'var(--button-color, #fff)',
         cursor: 'pointer',
-        fontSize: '14px',
+        fontSize: 13,
         fontWeight: 600,
+        textAlign: 'left',
     },
-    uploadButtonDisabled: {
-        backgroundColor: 'var(--center-channel-color-24, #ccc)',
-        color: 'var(--center-channel-color-56, #888)',
-        cursor: 'not-allowed',
+    tabIcon: { display: 'flex', alignItems: 'center', flexShrink: 0 },
+    tabLabel: { flex: 1 },
+    tabCount: {
+        fontSize: 10,
+        fontWeight: 600,
+        opacity: 0.7,
     },
-    error: {
-        padding: '8px 16px',
-        backgroundColor: 'var(--error-text-color-08, #ffebee)',
-        color: 'var(--error-text-color, #c62828)',
-        fontSize: '14px',
-    },
-    grid: {
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))',
-        gap: '12px',
-        padding: '16px',
-        overflowY: 'auto',
-        overflowX: 'hidden',
-        flex: 1,
-        scrollbarWidth: 'thin',
-        scrollbarColor: 'var(--center-channel-color-24, #ddd) transparent',
-        maxWidth: '100%',
-        // Performance optimization: use contain: size to limit layout recalculations
-        contain: 'layout size',
-    },
-    stickerItem: {
-        position: 'relative',
+
+    // Sidebar bottom
+    sidebarBottom: {
+        padding: '8px 6px',
+        borderTop: '1px solid var(--center-channel-color-12, #eee)',
         display: 'flex',
         flexDirection: 'column',
-        alignItems: 'center',
-        padding: '10px',
-        borderRadius: '8px',
-        cursor: 'pointer',
-        transition: 'all 0.2s ease',
-        border: '1px solid transparent',
-        // Performance optimization: limit repaints
-        willChange: 'transform, box-shadow',
-        contain: 'content',
+        gap: 4,
     },
-    stickerImageContainer: {
+    sidebarAction: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 4,
+        padding: '7px 0',
+        borderRadius: 6,
+        border: '1px solid var(--center-channel-color-16, #e0e0e0)',
+        background: 'var(--center-channel-bg, #fff)',
+        color: 'var(--center-channel-color)',
+        cursor: 'pointer',
+        fontSize: 12,
+        fontWeight: 500,
+    },
+    multiInfo: {
+        fontSize: 11,
+        textAlign: 'center',
+        color: 'var(--button-bg, #166de0)',
+        fontWeight: 600,
+        padding: '2px 0',
+    },
+    sidebarIconBtn: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 32,
+        height: 32,
+        borderRadius: 6,
+        border: '1px solid var(--center-channel-color-16, #e0e0e0)',
+        background: 'var(--center-channel-bg, #fff)',
+        color: 'var(--center-channel-color)',
+        cursor: 'pointer',
+        padding: 0,
+    },
+
+    // ── Content ────────────────────────────────────────────────────
+    content: {
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        minWidth: 0,
         position: 'relative',
-        width: '100%',
-        height: '100px',
+        paddingRight: 0,
+    },
+
+    contentHeader: {
         display: 'flex',
-        justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: 'var(--center-channel-color-04, #f5f5f5)',
-        borderRadius: '4px',
-        overflow: 'hidden',
+        gap: 6,
+        padding: '10px 14px',
+        borderBottom: '1px solid var(--center-channel-color-12, #eee)',
     },
-    stickerImage: {
-        width: '100%',
-        height: '100%',
-        objectFit: 'contain',
-        backgroundColor: 'var(--center-channel-bg, #fff)',
+    contentTitle: {
+        fontSize: 14,
+        fontWeight: 700,
+        color: 'var(--center-channel-color)',
     },
-    stickerItemSelected: {
-        backgroundColor: 'var(--button-bg-08, rgba(22, 109, 224, 0.08))',
-        borderColor: 'var(--button-bg, #166de0)',
-        border: '1px solid var(--button-bg, #166de0)',
+    contentCount: {
+        fontSize: 11,
+        fontWeight: 600,
+        color: 'var(--center-channel-color-56, #aaa)',
+        backgroundColor: 'var(--center-channel-color-08, #f0f0f0)',
+        padding: '1px 6px',
+        borderRadius: 8,
     },
-    selectionCheckbox: {
-        position: 'absolute',
-        top: '4px',
-        left: '4px',
-        zIndex: 10,
-        backgroundColor: 'var(--center-channel-bg, #fff)',
-        borderRadius: '50%',
-        padding: '2px',
-        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
-    },
-    checkbox: {
-        cursor: 'pointer',
-        accentColor: 'var(--button-bg, #166de0)',
-    },
-    stickerName: {
-        fontSize: '10px',
-        marginTop: '4px',
-        textAlign: 'center',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
-        width: '100%',
-        color: 'var(--center-channel-color, #3d3c40)',
-    },
-    deleteButton: {
-        position: 'absolute',
-        top: '2px',
-        right: '2px',
-        background: 'var(--error-text-color, #d24b4e)',
-        color: '#fff',
+    closeBtn: {
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        width: 28, height: 28,
+        borderRadius: 6,
         border: 'none',
-        borderRadius: '50%',
-        width: '18px',
-        height: '18px',
-        fontSize: '12px',
+        background: 'transparent',
+        color: 'var(--center-channel-color-56, #888)',
         cursor: 'pointer',
+    },
+
+    // Upload panel
+    uploadContainer: {
+        padding: '10px 14px',
+        borderBottom: '1px solid var(--center-channel-color-12, #eee)',
+        animation: 'spSlideUp 0.2s ease-out',
+    },
+    uploadPanel: {
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        flexDirection: 'column',
+        gap: 6,
     },
-    loading: {
-        gridColumn: '1 / -1',
-        textAlign: 'center',
-        padding: '20px',
-        color: 'var(--center-channel-color-56, #666)',
-    },
-    empty: {
-        gridColumn: '1 / -1',
-        textAlign: 'center',
-        padding: '20px',
-        color: 'var(--center-channel-color-56, #666)',
-    },
-    bulkHint: {
-        fontSize: '12px',
-        color: 'var(--center-channel-color-56, #666)',
-        marginBottom: '4px',
-    },
-    bulkResult: {
-        padding: '8px',
-        borderRadius: '4px',
+    uploadInput: {
+        padding: '7px 10px',
+        borderRadius: 6,
+        border: '1px solid var(--center-channel-color-16, #e0e0e0)',
+        fontSize: 12,
         backgroundColor: 'var(--center-channel-bg, #fff)',
-        border: '1px solid var(--center-channel-color-24, #ddd)',
-        fontSize: '12px',
-        maxHeight: '100px',
-        overflowY: 'auto',
+        color: 'var(--center-channel-color)',
+        outline: 'none',
     },
-    bulkSuccess: {
-        color: 'var(--online-indicator, #3db887)',
-        marginBottom: '4px',
+    uploadDrop: {
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '12px 8px',
+        borderRadius: 6,
+        border: '1.5px dashed var(--center-channel-color-24, #ddd)',
+        cursor: 'pointer',
+        transition: 'border-color 0.15s',
+        minHeight: 44,
     },
-    bulkFailed: {
+    uploadError: {
+        fontSize: 11,
         color: 'var(--error-text-color, #d24b4e)',
     },
-    bulkFailedItem: {
-        marginLeft: '8px',
-        fontSize: '11px',
-    },
-    loadMore: {
-        gridColumn: '1 / -1',
-        textAlign: 'center',
-        padding: '20px',
-    },
-    loadMoreButton: {
-        padding: '10px 20px',
-        backgroundColor: 'var(--button-bg, #166de0)',
-        color: 'var(--button-color, #fff)',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '14px',
-        fontWeight: 500,
-    },
-    loadMoreButtonDisabled: {
-        padding: '10px 20px',
-        backgroundColor: 'var(--center-channel-color-24, #ccc)',
+    bulkInfo: {
+        fontSize: 11,
         color: 'var(--center-channel-color-56, #888)',
-        border: 'none',
-        borderRadius: '4px',
-        cursor: 'not-allowed',
-        fontSize: '14px',
-        fontWeight: 500,
+        fontStyle: 'italic',
     },
+    bulkResult: {
+        display: 'flex',
+        gap: 8,
+        fontSize: 11,
+        fontWeight: 600,
+    },
+    previewSize: {
+        marginTop: 4,
+        fontSize: 11,
+        color: 'var(--center-channel-color-56, #aaa)',
+    },
+    btnUpload: {
+        padding: '7px 0',
+        borderRadius: 6,
+        border: 'none',
+        background: 'var(--button-bg, #166de0)',
+        color: 'var(--button-color, #fff)',
+        cursor: 'pointer',
+        fontSize: 12,
+        fontWeight: 600,
+    },
+    btnUploadDisabled: {
+        padding: '7px 0',
+        borderRadius: 6,
+        border: 'none',
+        background: 'var(--center-channel-color-12, #eee)',
+        color: 'var(--center-channel-color-56, #aaa)',
+        cursor: 'not-allowed',
+        fontSize: 12,
+        fontWeight: 600,
+    },
+
+    // Error
+    error: {
+        margin: '0 14px',
+        padding: '6px 10px',
+        borderRadius: 6,
+        backgroundColor: 'var(--error-text-color-08, #ffebee)',
+        color: 'var(--error-text-color, #c62828)',
+        fontSize: 12,
+    },
+
+    // Grid
+    grid: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))',
+        gap: 10,
+        padding: '14px 18px 18px',
+        overflowY: 'auto',
+        flex: 1,
+        alignContent: 'start',
+        outline: 'none',
+        scrollbarWidth: 'thin',
+        scrollbarColor: 'var(--center-channel-color-24, #ddd) transparent',
+    },
+
+    // Sticker item
+    item: {
+        position: 'relative',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        padding: 8,
+        borderRadius: 8,
+        cursor: 'pointer',
+        border: '2px solid transparent',
+        transition: 'all 0.12s ease',
+        animation: 'spPop 0.2s ease-out',
+    },
+    itemFocused: {
+        borderColor: 'var(--button-bg, #166de0)',
+        background: 'var(--button-bg-08, rgba(22,109,224,0.06))',
+    },
+    itemSelected: {
+        borderColor: 'var(--button-bg, #166de0)',
+        background: 'var(--button-bg-08, rgba(22,109,224,0.08))',
+    },
+    itemCheckbox: {
+        position: 'absolute', top: 4, left: 4, zIndex: 2,
+        width: 20, height: 20, borderRadius: 4,
+        backgroundColor: 'var(--center-channel-bg, #fff)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
+    },
+    itemImage: {
+        width: '100%',
+        aspectRatio: '1 / 1',
+        objectFit: 'contain',
+        borderRadius: 6,
+        transition: 'transform 0.2s ease, filter 0.2s ease',
+    },
+    itemOwnerIcon: {
+        position: 'absolute', bottom: 3, right: 3,
+        width: 14, height: 14,
+        borderRadius: '50%',
+        backgroundColor: 'var(--button-bg, #166de0)',
+        color: '#fff',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        opacity: 0.7,
+    },
+
+    // Hover preview - always visible right panel (separate column)
+    preview: {
+        width: 280,
+        flexShrink: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'var(--center-channel-color-04, #fafafa)',
+        borderLeft: '1px solid var(--center-channel-color-12, #eee)',
+        padding: 24,
+    },
+    previewImage: {
+        maxWidth: '100%',
+        maxHeight: 300,
+        objectFit: 'contain',
+        transition: 'transform 0.2s ease',
+    },
+    previewName: {
+        marginTop: 10,
+        fontSize: 13,
+        fontWeight: 600,
+        color: 'var(--center-channel-color)',
+        textAlign: 'center',
+        wordBreak: 'break-word',
+    },
+    previewEmpty: {
+        color: 'var(--center-channel-color-56, #aaa)',
+        fontSize: 12,
+        textAlign: 'center',
+    },
+
+    // State
+    stateMsg: {
+        gridColumn: '1 / -1',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '40px 0',
+        color: 'var(--center-channel-color-56, #aaa)',
+        fontSize: 13,
+    },
+    spinner: {
+        width: 24, height: 24,
+        border: '2.5px solid var(--center-channel-color-16, #e0e0e0)',
+        borderTopColor: 'var(--button-bg, #166de0)',
+        borderRadius: '50%',
+        animation: 'spin 0.6s linear infinite',
+    },
+
+    // Toast
+    toast: {
+        position: 'fixed',
+        bottom: 24,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        backgroundColor: 'var(--online-indicator, #3db887)',
+        color: '#fff',
+        padding: '8px 16px',
+        borderRadius: 20,
+        fontSize: 13,
+        fontWeight: 600,
+        display: 'flex',
+        alignItems: 'center',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+        zIndex: 10001,
+        animation: 'spSlideUp 0.2s ease-out',
+    },
+
+    // Dialog
+    overlay2: { position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10001 },
+    dialog: { backgroundColor: 'var(--center-channel-bg, #fff)', borderRadius: 12, padding: 24, maxWidth: 340, width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' },
+    dialogTitle: { margin: '0 0 8px', fontSize: 16, fontWeight: 600, color: 'var(--center-channel-color)' },
+    dialogMsg: { margin: '0 0 16px', fontSize: 13, color: 'var(--center-channel-color-56, #666)', lineHeight: 1.5 },
+    dialogActions: { display: 'flex', gap: 8, justifyContent: 'flex-end' },
+    btnGhost: { padding: '7px 14px', borderRadius: 6, border: '1px solid var(--center-channel-color-24, #ddd)', background: 'var(--center-channel-bg, #fff)', color: 'var(--center-channel-color)', cursor: 'pointer', fontSize: 13, fontWeight: 500 },
+    btnPrimary: { padding: '7px 14px', borderRadius: 6, border: 'none', background: 'var(--button-bg, #166de0)', color: 'var(--button-color, #fff)', cursor: 'pointer', fontSize: 13, fontWeight: 600 },
+    btnDanger: { padding: '7px 14px', borderRadius: 6, border: 'none', background: 'var(--error-text-color, #d24b4e)', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 },
 };
+
+// Spin animation
+const spinEl = document.createElement('style');
+spinEl.textContent = `@keyframes spin { to { transform: rotate(360deg); } }`;
+if (!document.getElementById('sp-spin')) { spinEl.id = 'sp-spin'; document.head.appendChild(spinEl); }
 
 export default StickerPicker;

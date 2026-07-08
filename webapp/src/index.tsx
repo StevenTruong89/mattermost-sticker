@@ -7,7 +7,7 @@ import { StickerIcon } from './components/StickerButton';
 import { doPost } from './actions/api';
 
 const PLUGIN_ID = 'com.example.sticker';
-// Force new bundle hash - PERFORMANCE OPTIMIZATION v1.5.7
+// Force new bundle hash - UI REDESIGN v1.6.0
 
 declare global {
     interface Window {

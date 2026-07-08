@@ -4,6 +4,7 @@ export interface Sticker {
     file_id: string;
     creator_id: string;
     created_at: number;
+    file_size?: number;
 }
 
 export interface StickerList {
