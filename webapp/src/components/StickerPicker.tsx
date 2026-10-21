@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
     getStickers,
     searchStickers,
-    uploadSticker,
     deleteSticker,
     getStickerImageUrl,
     bulkUploadStickers,
@@ -65,73 +64,6 @@ const SentToast: React.FC<{ name: string; onDone: () => void }> = ({ name, onDon
     );
 };
 
-// ─── Upload Panel (inline in sidebar) ───────────────────────────────────────
-
-interface UploadPanelProps {
-    channelId: string;
-    onDone: () => void;
-}
-
-const UploadPanel: React.FC<UploadPanelProps> = ({ channelId, onDone }) => {
-    const [name, setName] = useState('');
-    const [file, setFile] = useState<File | null>(null);
-    const [uploading, setUploading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const inputRef = useRef<HTMLInputElement>(null);
-
-    const handleUpload = async () => {
-        if (!name.trim() || !file) return;
-        if (name.trim().length > 10) { setError('Max 10 characters'); return; }
-        try {
-            setUploading(true);
-            setError(null);
-            await uploadSticker(name.trim(), file, channelId);
-            setName('');
-            setFile(null);
-            onDone();
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed');
-        } finally {
-            setUploading(false);
-        }
-    };
-
-    return (
-        <div style={S.uploadPanel}>
-            <input
-                type="text"
-                placeholder="Name (max 10)"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                style={S.uploadInput}
-                maxLength={10}
-                autoFocus
-            />
-            <div
-                style={S.uploadDrop}
-                onClick={() => inputRef.current?.click()}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); }}
-            >
-                <input ref={inputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
-                {file ? (
-                    <span style={{ fontSize: 12, color: 'var(--center-channel-color)' }}>{file.name}</span>
-                ) : (
-                    <span style={{ fontSize: 12, color: 'var(--center-channel-color-56, #888)' }}>Drop or click</span>
-                )}
-            </div>
-            {error && <div style={S.uploadError}>{error}</div>}
-            <button
-                style={!name.trim() || !file || uploading ? S.btnUploadDisabled : S.btnUpload}
-                onClick={handleUpload}
-                disabled={!name.trim() || !file || uploading}
-            >
-                {uploading ? '...' : 'Upload'}
-            </button>
-        </div>
-    );
-};
-
 // ─── Bulk Upload Panel ──────────────────────────────────────────────────────
 
 interface BulkUploadPanelProps {
@@ -179,15 +111,15 @@ const BulkUploadPanel: React.FC<BulkUploadPanelProps> = ({ channelId, onDone }) 
                 {files ? (
                     <span style={{ fontSize: 12, color: 'var(--center-channel-color)' }}>{files.length} file(s) selected</span>
                 ) : (
-                    <span style={{ fontSize: 12, color: 'var(--center-channel-color-56, #888)' }}>Drop or click to select multiple</span>
+                    <span style={{ fontSize: 12, color: 'rgba(var(--center-channel-color-rgb), 0.56)' }}>Drop or click to select multiple</span>
                 )}
             </div>
             {error && <div style={S.uploadError}>{error}</div>}
             {result && (
                 <div style={S.bulkResult}>
-                    <div style={{ color: 'var(--online-indicator, #3db887)' }}>{result.success.length} uploaded</div>
+                    <div style={{ color: 'var(--online-indicator)' }}>{result.success.length} uploaded</div>
                     {Object.keys(result.failed).length > 0 && (
-                        <div style={{ color: 'var(--error-text-color, #d24b4e)' }}>{Object.keys(result.failed).length} failed</div>
+                        <div style={{ color: 'rgb(var(--error-text-color-rgb))' }}>{Object.keys(result.failed).length} failed</div>
                     )}
                 </div>
             )}
@@ -232,7 +164,7 @@ const StickerItem = React.memo<StickerItemProps>(
         >
             {isMultiSelect && (
                 <div style={S.itemCheckbox}>
-                    <input type="checkbox" checked={isSelected} onChange={() => onToggleMulti(sticker.id)} style={{ accentColor: 'var(--button-bg, #166de0)' }} />
+                    <input type="checkbox" checked={isSelected} onChange={() => onToggleMulti(sticker.id)} style={{ accentColor: 'var(--button-bg)' }} />
                 </div>
             )}
             <img
@@ -282,7 +214,10 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
     const [loadingMore, setLoadingMore] = useState(false);
     const PER_PAGE = 50;
 
-    const [showUpload, setShowUpload] = useState(false);
+    // The tab the currently loaded stickers belong to. Used to tell "this tab has no stickers"
+    // apart from "the previous tab had no stickers and we just switched".
+    const [loadedTab, setLoadedTab] = useState<TabKey | null>(null);
+
     const [showBulkUpload, setShowBulkUpload] = useState(false);
     const [multiSelect, setMultiSelect] = useState(false);
     const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -302,8 +237,9 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
     // ── Data loading ───────────────────────────────────────────────────────
 
     const loadStickers = useCallback(async (pageNum: number, isLoadMore: boolean) => {
+        const tabAtRequest = activeTab;
         try {
-            if (isLoadMore) setLoadingMore(true); else setLoading(true);
+            if (isLoadMore) setLoadingMore(true); else { setLoading(true); setLoadedTab(null); }
             setError(null);
 
             const ids = getRecentStickers();
@@ -312,8 +248,8 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
             let result;
             if (debouncedSearch) {
                 result = await searchStickers(debouncedSearch);
-            } else if (activeTab === 'recent' && ids.length > 0) {
-                result = await getStickersByIds(ids);
+            } else if (activeTab === 'recent') {
+                result = ids.length > 0 ? await getStickersByIds(ids) : {stickers: [], total: 0};
             } else if (activeTab === 'mine') {
                 result = await getStickers(pageNum, PER_PAGE, 'name', 'asc', currentUserId);
             } else {
@@ -324,6 +260,10 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
                 setStickers((prev) => [...prev, ...result.stickers]);
             } else {
                 setStickers(result.stickers);
+            }
+
+            if (!isLoadMore) {
+                setLoadedTab(tabAtRequest);
             }
 
             if (debouncedSearch || activeTab === 'recent') {
@@ -357,14 +297,15 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
         return () => observerRef.current?.disconnect();
     }, [loading, loadingMore, hasMore, stickers.length]);
 
-    // Auto-fallback
+    // Auto-fallback: only when the loaded data actually belongs to the current tab,
+    // otherwise switching to "Mine" would bounce back to "All" while the list is still empty.
     useEffect(() => {
         if (loading || loadingMore || debouncedSearch) return;
-        if (stickers.length === 0) {
-            if (activeTab === 'recent') setActiveTab('mine');
-            else if (activeTab === 'mine') setActiveTab('all');
-        }
-    }, [stickers.length, activeTab, loading, loadingMore, debouncedSearch]);
+        if (loadedTab !== activeTab) return;
+        if (stickers.length > 0) return;
+        if (activeTab === 'recent') setActiveTab('mine');
+        else if (activeTab === 'mine') setActiveTab('all');
+    }, [stickers.length, activeTab, loading, loadingMore, debouncedSearch, loadedTab]);
 
     // ── Keyboard navigation ────────────────────────────────────────────────
 
@@ -490,10 +431,10 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
                     cursor: pointer;
                 }
                 .sp-item:hover { 
-                    background: var(--center-channel-color-08, rgba(0,0,0,0.04)) !important; 
+                    background: rgba(var(--center-channel-color-rgb), 0.08) !important; 
                     transform: translateY(-4px) scale(1.04) !important; 
                     box-shadow: 0 8px 20px rgba(0,0,0,0.12) !important;
-                    border-color: var(--center-channel-color-16, rgba(0,0,0,0.08)) !important;
+                    border-color: rgba(var(--center-channel-color-rgb), 0.16) !important;
                 }
                 .sp-item-img { 
                     transition: transform 0.2s ease, filter 0.2s ease !important; 
@@ -507,9 +448,9 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
                     box-shadow: 0 2px 8px rgba(0,0,0,0.08) !important;
                     transition-duration: 0.1s !important;
                 }
-                .sp-tab:hover { background: var(--center-channel-color-08, #f0f0f0) !important; }
-                .sp-search:focus { border-color: var(--button-bg, #166de0) !important; box-shadow: 0 0 0 2px rgba(22,109,224,0.15) !important; }
-                .sp-clear:hover { background: var(--center-channel-color-24, #ccc) !important; }
+                .sp-tab:hover { background: rgba(var(--center-channel-color-rgb), 0.08) !important; }
+                .sp-search:focus { border-color: var(--button-bg) !important; box-shadow: 0 0 0 2px rgba(var(--button-bg-rgb), 0.15) !important; }
+                .sp-clear:hover { background: rgba(var(--center-channel-color-rgb), 0.24) !important; }
                 @media (max-width: 900px) {
                     .sp-preview-panel { display: none !important; }
                 }
@@ -550,7 +491,7 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
                                     key={tab.key}
                                     className="sp-tab"
                                     style={activeTab === tab.key ? S.tabActive : S.tab}
-                                    onClick={() => { setActiveTab(tab.key); setSearchQuery(''); setFocusedIndex(-1); setShowUpload(false); setShowBulkUpload(false); }}
+                                    onClick={() => { setActiveTab(tab.key); setSearchQuery(''); setFocusedIndex(-1); setShowBulkUpload(false); }}
                                 >
                                     <span style={S.tabIcon}>{tab.icon}</span>
                                     <span style={S.tabLabel}>{tab.label}</span>
@@ -567,27 +508,24 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
                                         <button style={S.sidebarIconBtn} onClick={() => { setMultiSelect(false); setSelected(new Set()); }} title="Cancel">
                                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" fill="currentColor" /></svg>
                                         </button>
-                                        <button style={{ ...S.sidebarIconBtn, color: selected.size > 0 ? 'var(--error-text-color, #d24b4e)' : undefined }} onClick={handleBulkDelete} disabled={selected.size === 0} title="Delete selected">
+                                        <button style={{ ...S.sidebarIconBtn, color: selected.size > 0 ? 'rgb(var(--error-text-color-rgb))' : undefined }} onClick={handleBulkDelete} disabled={selected.size === 0} title="Delete selected">
                                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" fill="currentColor" /></svg>
                                         </button>
                                     </div>
                                 </>
                             ) : (
                                 <>
-                                    <button style={S.sidebarAction} onClick={() => { setShowUpload(!showUpload); setShowBulkUpload(false); }}>
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z" fill="currentColor" /></svg>
+                                    <button style={S.sidebarAction} onClick={() => { setShowBulkUpload(!showBulkUpload); }}>
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z" fill="currentColor" /></svg>
                                         <span style={{ marginLeft: 4 }}>Upload</span>
                                     </button>
-                                    <button style={S.sidebarAction} onClick={() => { setShowBulkUpload(!showBulkUpload); setShowUpload(false); }}>
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z" fill="currentColor" /></svg>
-                                        <span style={{ marginLeft: 4 }}>Bulk</span>
-                                    </button>
                                     <button style={S.sidebarAction} onClick={() => { setMultiSelect(!multiSelect); setSelected(new Set()); }}>
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M3 5h2V3c-1.1 0-2 .9-2 2zm0 8h2v-2H3v2zm4 8h2v-2H7v2zM3 9h2V7H3v2zm10-6h-2v2h2V3zm6 0v2h2c0-1.1-.9-2-2-2zm-6 18h2v-2h-2v2zm-8-8h2v-2H3v2zm0 4h2v-2H3v2zm8 4h2v-2h-2v2zm8-8h2v-2h-2v2zm0 8c1.1 0 2-.9 2-2h-2v2zm0-4h2v-2h-2v2zm0-4h2V7h-2v2zm0 8h2v-2h-2v2z" fill="currentColor" /></svg>
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M3 5h2V3c-1.1 0-2 .9-2 2zm0 8h2v-2H3v2zm4 8h2v-2H7v2zM3 9h2V7H3v2zm10-6h-2v2h2V3zm6 0v2h2c0-1.1-.9-2-2-2zm-6 18h2v-2h-2v2zm-8-8h2v-2H3v2zm0 4h2v-2H3v2zm8 4h2v-2h-2v2zm8-8h2v-2h-2v2zm0 8h2v-2h-2v2zm0-4h2v-2h-2v2zm0-4h2V7h-2v2zm0 8h2v-2h-2v2z" fill="currentColor" /></svg>
                                         <span style={{ marginLeft: 4 }}>Select</span>
                                     </button>
                                 </>
                             )}
+
                         </div>
                     </div>
 
@@ -608,13 +546,6 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
                         </div>
 
                         {/* Upload panel (slide down) */}
-                        {showUpload && (
-                            <div style={S.uploadContainer}>
-                                <UploadPanel channelId={channelId} onDone={() => { setRefresh((r) => r + 1); setShowUpload(false); }} />
-                            </div>
-                        )}
-
-                        {/* Bulk upload panel (slide down) */}
                         {showBulkUpload && (
                             <div style={S.uploadContainer}>
                                 <BulkUploadPanel channelId={channelId} onDone={() => { setRefresh((r) => r + 1); setShowBulkUpload(false); }} />
@@ -626,12 +557,12 @@ const StickerPicker: React.FC<StickerPickerProps> = ({ channelId, onSelect, onCl
 
                         {/* Sticker grid */}
                         <div ref={gridRef} style={S.grid}>
-                            {(showUpload || showBulkUpload) ? (
+                            {showBulkUpload ? (
                                 <div style={S.stateMsg}>
                                     <svg width="36" height="36" viewBox="0 0 24 24" fill="none" style={{ opacity: 0.3, marginBottom: 8 }}>
                                         <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" fill="currentColor" />
                                     </svg>
-                                    {showUpload ? 'Upload a single sticker' : 'Upload multiple stickers'}
+                                    Upload stickers
                                 </div>
                             ) : loading ? (
                                 <div style={S.stateMsg}><div style={S.spinner} /></div>
@@ -725,7 +656,7 @@ const S: Record<string, React.CSSProperties> = {
         height: 'min(88vh, 680px)',
         borderRadius: 12,
         overflow: 'hidden',
-        backgroundColor: 'var(--center-channel-bg, #fff)',
+        backgroundColor: 'var(--center-channel-bg)',
         boxShadow: '0 24px 64px rgba(0,0,0,0.3)',
         animation: 'spIn 0.2s cubic-bezier(0.34,1.56,0.64,1)',
     },
@@ -736,8 +667,8 @@ const S: Record<string, React.CSSProperties> = {
         flexShrink: 0,
         display: 'flex',
         flexDirection: 'column',
-        borderRight: '1px solid var(--center-channel-color-12, #eee)',
-        backgroundColor: 'var(--center-channel-color-04, #fafafa)',
+        borderRight: '1px solid rgba(var(--center-channel-color-rgb), 0.12)',
+        backgroundColor: 'rgba(var(--center-channel-color-rgb), 0.04)',
     },
 
     sidebarSearch: {
@@ -751,16 +682,16 @@ const S: Record<string, React.CSSProperties> = {
     searchIcon: {
         position: 'absolute',
         left: 10,
-        color: 'var(--center-channel-color-56, #aaa)',
+        color: 'rgba(var(--center-channel-color-rgb), 0.56)',
         pointerEvents: 'none',
     },
     searchInput: {
         width: '100%',
         padding: '9px 30px 9px 32px',
         borderRadius: 8,
-        border: '1px solid var(--center-channel-color-16, #e0e0e0)',
+        border: '1px solid rgba(var(--center-channel-color-rgb), 0.16)',
         fontSize: 13,
-        backgroundColor: 'var(--center-channel-bg, #fff)',
+        backgroundColor: 'var(--center-channel-bg)',
         color: 'var(--center-channel-color)',
         outline: 'none',
         boxSizing: 'border-box',
@@ -773,8 +704,8 @@ const S: Record<string, React.CSSProperties> = {
         height: 18,
         borderRadius: '50%',
         border: 'none',
-        background: 'var(--center-channel-color-16, #ddd)',
-        color: 'var(--center-channel-color-56, #888)',
+        background: 'rgba(var(--center-channel-color-rgb), 0.16)',
+        color: 'rgba(var(--center-channel-color-rgb), 0.56)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -801,7 +732,7 @@ const S: Record<string, React.CSSProperties> = {
         borderRadius: 6,
         border: 'none',
         background: 'transparent',
-        color: 'var(--center-channel-color-56, #888)',
+        color: 'rgba(var(--center-channel-color-rgb), 0.56)',
         cursor: 'pointer',
         fontSize: 13,
         fontWeight: 500,
@@ -815,8 +746,8 @@ const S: Record<string, React.CSSProperties> = {
         padding: '8px 10px',
         borderRadius: 6,
         border: 'none',
-        background: 'var(--button-bg, #166de0)',
-        color: 'var(--button-color, #fff)',
+        background: 'var(--button-bg)',
+        color: 'var(--button-color)',
         cursor: 'pointer',
         fontSize: 13,
         fontWeight: 600,
@@ -828,7 +759,7 @@ const S: Record<string, React.CSSProperties> = {
     // Sidebar bottom
     sidebarBottom: {
         padding: '8px 6px',
-        borderTop: '1px solid var(--center-channel-color-12, #eee)',
+        borderTop: '1px solid rgba(var(--center-channel-color-rgb), 0.12)',
         display: 'flex',
         flexDirection: 'column',
         gap: 4,
@@ -840,8 +771,8 @@ const S: Record<string, React.CSSProperties> = {
         gap: 4,
         padding: '7px 0',
         borderRadius: 6,
-        border: '1px solid var(--center-channel-color-16, #e0e0e0)',
-        background: 'var(--center-channel-bg, #fff)',
+        border: '1px solid rgba(var(--center-channel-color-rgb), 0.16)',
+        background: 'var(--center-channel-bg)',
         color: 'var(--center-channel-color)',
         cursor: 'pointer',
         fontSize: 12,
@@ -850,7 +781,7 @@ const S: Record<string, React.CSSProperties> = {
     multiInfo: {
         fontSize: 11,
         textAlign: 'center',
-        color: 'var(--button-bg, #166de0)',
+        color: 'var(--button-bg)',
         fontWeight: 600,
         padding: '2px 0',
     },
@@ -861,8 +792,8 @@ const S: Record<string, React.CSSProperties> = {
         width: 32,
         height: 32,
         borderRadius: 6,
-        border: '1px solid var(--center-channel-color-16, #e0e0e0)',
-        background: 'var(--center-channel-bg, #fff)',
+        border: '1px solid rgba(var(--center-channel-color-rgb), 0.16)',
+        background: 'var(--center-channel-bg)',
         color: 'var(--center-channel-color)',
         cursor: 'pointer',
         padding: 0,
@@ -883,7 +814,7 @@ const S: Record<string, React.CSSProperties> = {
         alignItems: 'center',
         gap: 6,
         padding: '10px 14px',
-        borderBottom: '1px solid var(--center-channel-color-12, #eee)',
+        borderBottom: '1px solid rgba(var(--center-channel-color-rgb), 0.12)',
     },
     contentTitle: {
         fontSize: 14,
@@ -893,8 +824,8 @@ const S: Record<string, React.CSSProperties> = {
     contentCount: {
         fontSize: 11,
         fontWeight: 600,
-        color: 'var(--center-channel-color-56, #aaa)',
-        backgroundColor: 'var(--center-channel-color-08, #f0f0f0)',
+        color: 'rgba(var(--center-channel-color-rgb), 0.56)',
+        backgroundColor: 'rgba(var(--center-channel-color-rgb), 0.08)',
         padding: '1px 6px',
         borderRadius: 8,
     },
@@ -904,14 +835,14 @@ const S: Record<string, React.CSSProperties> = {
         borderRadius: 6,
         border: 'none',
         background: 'transparent',
-        color: 'var(--center-channel-color-56, #888)',
+        color: 'rgba(var(--center-channel-color-rgb), 0.56)',
         cursor: 'pointer',
     },
 
     // Upload panel
     uploadContainer: {
         padding: '10px 14px',
-        borderBottom: '1px solid var(--center-channel-color-12, #eee)',
+        borderBottom: '1px solid rgba(var(--center-channel-color-rgb), 0.12)',
         animation: 'spSlideUp 0.2s ease-out',
     },
     uploadPanel: {
@@ -922,9 +853,9 @@ const S: Record<string, React.CSSProperties> = {
     uploadInput: {
         padding: '7px 10px',
         borderRadius: 6,
-        border: '1px solid var(--center-channel-color-16, #e0e0e0)',
+        border: '1px solid rgba(var(--center-channel-color-rgb), 0.16)',
         fontSize: 12,
-        backgroundColor: 'var(--center-channel-bg, #fff)',
+        backgroundColor: 'var(--center-channel-bg)',
         color: 'var(--center-channel-color)',
         outline: 'none',
     },
@@ -932,18 +863,18 @@ const S: Record<string, React.CSSProperties> = {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: '12px 8px',
         borderRadius: 6,
-        border: '1.5px dashed var(--center-channel-color-24, #ddd)',
+        border: '1.5px dashed rgba(var(--center-channel-color-rgb), 0.24)',
         cursor: 'pointer',
         transition: 'border-color 0.15s',
         minHeight: 44,
     },
     uploadError: {
         fontSize: 11,
-        color: 'var(--error-text-color, #d24b4e)',
+        color: 'rgb(var(--error-text-color-rgb))',
     },
     bulkInfo: {
         fontSize: 11,
-        color: 'var(--center-channel-color-56, #888)',
+        color: 'rgba(var(--center-channel-color-rgb), 0.56)',
         fontStyle: 'italic',
     },
     bulkResult: {
@@ -955,14 +886,14 @@ const S: Record<string, React.CSSProperties> = {
     previewSize: {
         marginTop: 4,
         fontSize: 11,
-        color: 'var(--center-channel-color-56, #aaa)',
+        color: 'rgba(var(--center-channel-color-rgb), 0.56)',
     },
     btnUpload: {
         padding: '7px 0',
         borderRadius: 6,
         border: 'none',
-        background: 'var(--button-bg, #166de0)',
-        color: 'var(--button-color, #fff)',
+        background: 'var(--button-bg)',
+        color: 'var(--button-color)',
         cursor: 'pointer',
         fontSize: 12,
         fontWeight: 600,
@@ -971,8 +902,8 @@ const S: Record<string, React.CSSProperties> = {
         padding: '7px 0',
         borderRadius: 6,
         border: 'none',
-        background: 'var(--center-channel-color-12, #eee)',
-        color: 'var(--center-channel-color-56, #aaa)',
+        background: 'rgba(var(--center-channel-color-rgb), 0.12)',
+        color: 'rgba(var(--center-channel-color-rgb), 0.56)',
         cursor: 'not-allowed',
         fontSize: 12,
         fontWeight: 600,
@@ -983,8 +914,8 @@ const S: Record<string, React.CSSProperties> = {
         margin: '0 14px',
         padding: '6px 10px',
         borderRadius: 6,
-        backgroundColor: 'var(--error-text-color-08, #ffebee)',
-        color: 'var(--error-text-color, #c62828)',
+        backgroundColor: 'rgba(var(--error-text-color-rgb), 0.08)',
+        color: 'rgb(var(--error-text-color-rgb))',
         fontSize: 12,
     },
 
@@ -999,7 +930,7 @@ const S: Record<string, React.CSSProperties> = {
         alignContent: 'start',
         outline: 'none',
         scrollbarWidth: 'thin',
-        scrollbarColor: 'var(--center-channel-color-24, #ddd) transparent',
+        scrollbarColor: 'rgba(var(--center-channel-color-rgb), 0.24) transparent',
     },
 
     // Sticker item
@@ -1016,17 +947,17 @@ const S: Record<string, React.CSSProperties> = {
         animation: 'spPop 0.2s ease-out',
     },
     itemFocused: {
-        borderColor: 'var(--button-bg, #166de0)',
-        background: 'var(--button-bg-08, rgba(22,109,224,0.06))',
+        borderColor: 'var(--button-bg)',
+        background: 'rgba(var(--button-bg-rgb), 0.06)',
     },
     itemSelected: {
-        borderColor: 'var(--button-bg, #166de0)',
-        background: 'var(--button-bg-08, rgba(22,109,224,0.08))',
+        borderColor: 'var(--button-bg)',
+        background: 'rgba(var(--button-bg-rgb), 0.08)',
     },
     itemCheckbox: {
         position: 'absolute', top: 4, left: 4, zIndex: 2,
         width: 20, height: 20, borderRadius: 4,
-        backgroundColor: 'var(--center-channel-bg, #fff)',
+        backgroundColor: 'var(--center-channel-bg)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
     },
@@ -1041,7 +972,7 @@ const S: Record<string, React.CSSProperties> = {
         position: 'absolute', bottom: 3, right: 3,
         width: 14, height: 14,
         borderRadius: '50%',
-        backgroundColor: 'var(--button-bg, #166de0)',
+        backgroundColor: 'var(--button-bg)',
         color: '#fff',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         opacity: 0.7,
@@ -1055,8 +986,8 @@ const S: Record<string, React.CSSProperties> = {
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: 'var(--center-channel-color-04, #fafafa)',
-        borderLeft: '1px solid var(--center-channel-color-12, #eee)',
+        backgroundColor: 'rgba(var(--center-channel-color-rgb), 0.04)',
+        borderLeft: '1px solid rgba(var(--center-channel-color-rgb), 0.12)',
         padding: 24,
     },
     previewImage: {
@@ -1074,7 +1005,7 @@ const S: Record<string, React.CSSProperties> = {
         wordBreak: 'break-word',
     },
     previewEmpty: {
-        color: 'var(--center-channel-color-56, #aaa)',
+        color: 'rgba(var(--center-channel-color-rgb), 0.56)',
         fontSize: 12,
         textAlign: 'center',
     },
@@ -1087,13 +1018,13 @@ const S: Record<string, React.CSSProperties> = {
         alignItems: 'center',
         justifyContent: 'center',
         padding: '40px 0',
-        color: 'var(--center-channel-color-56, #aaa)',
+        color: 'rgba(var(--center-channel-color-rgb), 0.56)',
         fontSize: 13,
     },
     spinner: {
         width: 24, height: 24,
-        border: '2.5px solid var(--center-channel-color-16, #e0e0e0)',
-        borderTopColor: 'var(--button-bg, #166de0)',
+        border: '2.5px solid rgba(var(--center-channel-color-rgb), 0.16)',
+        borderTopColor: 'var(--button-bg)',
         borderRadius: '50%',
         animation: 'spin 0.6s linear infinite',
     },
@@ -1104,7 +1035,7 @@ const S: Record<string, React.CSSProperties> = {
         bottom: 24,
         left: '50%',
         transform: 'translateX(-50%)',
-        backgroundColor: 'var(--online-indicator, #3db887)',
+        backgroundColor: 'var(--online-indicator)',
         color: '#fff',
         padding: '8px 16px',
         borderRadius: 20,
@@ -1119,13 +1050,13 @@ const S: Record<string, React.CSSProperties> = {
 
     // Dialog
     overlay2: { position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10001 },
-    dialog: { backgroundColor: 'var(--center-channel-bg, #fff)', borderRadius: 12, padding: 24, maxWidth: 340, width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' },
+    dialog: { backgroundColor: 'var(--center-channel-bg)', borderRadius: 12, padding: 24, maxWidth: 340, width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' },
     dialogTitle: { margin: '0 0 8px', fontSize: 16, fontWeight: 600, color: 'var(--center-channel-color)' },
-    dialogMsg: { margin: '0 0 16px', fontSize: 13, color: 'var(--center-channel-color-56, #666)', lineHeight: 1.5 },
+    dialogMsg: { margin: '0 0 16px', fontSize: 13, color: 'rgba(var(--center-channel-color-rgb), 0.56)', lineHeight: 1.5 },
     dialogActions: { display: 'flex', gap: 8, justifyContent: 'flex-end' },
-    btnGhost: { padding: '7px 14px', borderRadius: 6, border: '1px solid var(--center-channel-color-24, #ddd)', background: 'var(--center-channel-bg, #fff)', color: 'var(--center-channel-color)', cursor: 'pointer', fontSize: 13, fontWeight: 500 },
-    btnPrimary: { padding: '7px 14px', borderRadius: 6, border: 'none', background: 'var(--button-bg, #166de0)', color: 'var(--button-color, #fff)', cursor: 'pointer', fontSize: 13, fontWeight: 600 },
-    btnDanger: { padding: '7px 14px', borderRadius: 6, border: 'none', background: 'var(--error-text-color, #d24b4e)', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 },
+    btnGhost: { padding: '7px 14px', borderRadius: 6, border: '1px solid rgba(var(--center-channel-color-rgb), 0.24)', background: 'var(--center-channel-bg)', color: 'var(--center-channel-color)', cursor: 'pointer', fontSize: 13, fontWeight: 500 },
+    btnPrimary: { padding: '7px 14px', borderRadius: 6, border: 'none', background: 'var(--button-bg)', color: 'var(--button-color)', cursor: 'pointer', fontSize: 13, fontWeight: 600 },
+    btnDanger: { padding: '7px 14px', borderRadius: 6, border: 'none', background: 'rgb(var(--error-text-color-rgb))', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 },
 };
 
 // Spin animation

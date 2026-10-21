@@ -20,6 +20,12 @@ export interface PluginRegistry {
         dropdownText: string,
         tooltipText?: string
     ): void;
+    registerPostEditorActionComponent(component: React.ComponentType<any>): void;
+    registerFileUploadMethod(
+        icon: React.ReactNode,
+        action: () => void,
+        text: string
+    ): void;
     registerRootComponent(component: React.ComponentType<any>): void;
     unregisterComponent(componentId: string): void;
 }

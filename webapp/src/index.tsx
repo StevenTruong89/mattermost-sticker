@@ -3,11 +3,12 @@ import ReactDOM from 'react-dom';
 import { PluginRegistry, Store, Sticker } from './types';
 import StickerPicker from './components/StickerPicker';
 import StickerPost from './components/StickerPost';
-import { StickerIcon } from './components/StickerButton';
+import StickerEditorAction from './components/StickerEditorAction';
 import { doPost } from './actions/api';
 
 const PLUGIN_ID = 'com.example.sticker';
 // Force new bundle hash - UI REDESIGN v1.6.0
+// Force new bundle hash - Mattermost v12 editor action v1.7.0
 
 declare global {
     interface Window {
@@ -26,6 +27,7 @@ class Plugin {
     private store: Store | null = null;
     private registeredComponents: string[] = [];
     private pickerContainer: HTMLDivElement | null = null;
+    private pickerRoot: any = null;
     private state: PluginState = {
         pickerVisible: false,
         channelId: '',
@@ -39,13 +41,16 @@ class Plugin {
         // Register custom post type for stickers
         registry.registerPostTypeComponent('custom_sticker', StickerPost);
 
-        // Register file upload method (appears in attachment menu, bottom left)
-        if ((registry as any).registerFileUploadMethod) {
-            (registry as any).registerFileUploadMethod(
-                <StickerIcon />,
-                this.openStickerPicker.bind(this),
-                'Stickers'
-            );
+        // Register the sticker button in the post editor (Mattermost v12+).
+        // The composer no longer renders plugin file upload methods, so the button
+        // has to be registered as a post editor action to be visible in the editor.
+        if ((registry as any).registerPostEditorActionComponent) {
+            (registry as any).registerPostEditorActionComponent((props: any) => (
+                <StickerEditorAction
+                    draft={props?.draft}
+                    onOpen={(channelId, rootId) => this.openStickerPicker(undefined, {channelId, rootId})}
+                />
+            ));
         }
 
         // Also register channel header button as fallback
@@ -69,11 +74,32 @@ class Plugin {
         document.body.appendChild(this.pickerContainer);
     }
 
-    private openStickerPicker(channelIdOrObject: string | { id?: string; channel_id?: string; root_id?: string } | undefined): void {
+    private openStickerPicker(
+        channelIdOrObject?: string | { id?: string; channel_id?: string; root_id?: string },
+        override?: { channelId?: string; rootId?: string },
+    ): void {
         if (!this.pickerContainer || !this.store) return;
 
         const state = this.store.getState();
         const currentUserId = state.entities?.users?.currentUserId || '';
+
+        // The post editor action knows exactly which composer it belongs to,
+        // so its context always wins over the heuristics below.
+        if (override && (override.channelId || override.rootId)) {
+            const channelId = override.channelId || state.entities?.channels?.currentChannelId || '';
+            const rootId = override.rootId || '';
+
+            console.log('[Sticker] Editor action context, channelId:', channelId, 'rootId:', rootId);
+
+            this.state = {
+                pickerVisible: true,
+                channelId,
+                rootId,
+            };
+
+            this.renderPicker(currentUserId);
+            return;
+        }
 
         console.log('[Sticker] openStickerPicker called with:', channelIdOrObject);
         console.log('[Sticker] Current state views:', state.views);
@@ -266,7 +292,15 @@ class Plugin {
 
         console.log('[Sticker] Closing picker');
         this.state.pickerVisible = false;
-        ReactDOM.unmountComponentAtNode(this.pickerContainer);
+
+        const reactDom = ReactDOM as any;
+
+        if (this.pickerRoot) {
+            this.pickerRoot.unmount();
+            this.pickerRoot = null;
+        } else if (typeof reactDom.unmountComponentAtNode === 'function') {
+            reactDom.unmountComponentAtNode(this.pickerContainer);
+        }
     }
 
     private handleStickerSelect(sticker: Sticker): void {
@@ -323,20 +357,39 @@ class Plugin {
     private renderPicker(currentUserId: string): void {
         if (!this.pickerContainer) return;
 
-        ReactDOM.render(
+        const element = (
             <StickerPicker
                 channelId={this.state.channelId}
                 onSelect={this.handleStickerSelect.bind(this)}
                 onClose={this.closeStickerPicker.bind(this)}
                 currentUserId={currentUserId}
-            />,
-            this.pickerContainer
+            />
         );
+
+        const reactDom = ReactDOM as any;
+
+        // Mattermost v12 ships React 19, where ReactDOM.render was removed.
+        // Use createRoot when available and keep the legacy path for older servers.
+        if (typeof reactDom.createRoot === 'function') {
+            if (!this.pickerRoot) {
+                this.pickerRoot = reactDom.createRoot(this.pickerContainer);
+            }
+            this.pickerRoot.render(element);
+        } else {
+            ReactDOM.render(element, this.pickerContainer);
+        }
     }
 
     public uninitialize(): void {
+        if (this.pickerRoot) {
+            this.pickerRoot.unmount();
+            this.pickerRoot = null;
+        }
         if (this.pickerContainer) {
-            ReactDOM.unmountComponentAtNode(this.pickerContainer);
+            const reactDom = ReactDOM as any;
+            if (typeof reactDom.unmountComponentAtNode === 'function') {
+                reactDom.unmountComponentAtNode(this.pickerContainer);
+            }
             this.pickerContainer.remove();
             this.pickerContainer = null;
         }

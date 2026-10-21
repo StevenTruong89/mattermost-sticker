@@ -16,3 +16,6 @@ webapp/node_modules/
 .DS_Store
 Thumbs.db
 *.gz
+CONTINUITY.md
+memory-agent.md
+steven.md

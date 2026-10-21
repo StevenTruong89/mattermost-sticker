@@ -39,7 +39,7 @@ const styles: Record<string, React.CSSProperties> = {
     placeholder: {
         position: 'absolute',
         inset: 0,
-        backgroundColor: 'var(--center-channel-color-04, #f5f5f5)',
+        backgroundColor: 'rgba(var(--center-channel-color-rgb), 0.04)',
         borderRadius: '8px',
         animation: 'pulse 1.5s ease-in-out infinite',
     },
@@ -53,7 +53,7 @@ const styles: Record<string, React.CSSProperties> = {
     invalid: {
         padding: '8px 12px',
         fontSize: '13px',
-        color: 'var(--center-channel-color-56, #888)',
+        color: 'rgba(var(--center-channel-color-rgb), 0.56)',
         fontStyle: 'italic',
     },
 };
